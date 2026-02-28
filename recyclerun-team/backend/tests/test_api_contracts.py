@@ -8,6 +8,7 @@ from flask import Flask
 import pytest
 
 from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
+import backend.routes.optimize as optimize_module
 from backend.services.store import store
 
 
@@ -236,6 +237,81 @@ def test_claimed_listing_cannot_transition_back_to_available():
     )
     with pytest.raises(ValueError):
         store.update_status(listing_id, "available")
+
+
+def test_accept_route_notification_item_contract_and_eta_gap(monkeypatch):
+    _reset()
+    client = _client()
+    available = client.get("/api/listings?status=available").get_json()["listings"]
+    first_id = available[0]["id"]
+    second_id = available[1]["id"]
+
+    # Keep test deterministic and offline: no Twilio/ElevenLabs calls.
+    monkeypatch.setattr(
+        optimize_module.notifier,
+        "notify",
+        lambda **kwargs: {"success": True, "mode": "demo", "message": "offline contract test"},
+    )
+
+    first_resp = client.post(
+        "/api/accept-route",
+        json={
+            "driver_name": "Driver Contract",
+            "stops": [
+                {"listing_id": first_id, "eta_minutes": 15},   # claimed
+                {"listing_id": first_id, "eta_minutes": 16},   # duplicate_stop
+                {"listing_id": "missing_id", "eta_minutes": 17},  # not_found
+                {"listing_id": second_id, "eta_minutes": 18},  # claimed
+            ],
+        },
+    )
+    assert first_resp.status_code == 200
+    first_body = first_resp.get_json()
+
+    # Drive already_claimed branch (listing exists => household/phone included).
+    second_resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "Driver Contract", "stops": [{"listing_id": first_id, "eta_minutes": 19}]},
+    )
+    assert second_resp.status_code == 200
+    second_body = second_resp.get_json()
+
+    # Move first listing to completed and verify already_completed skip path.
+    complete_resp = client.post(f"/api/listings/{first_id}/complete")
+    assert complete_resp.status_code == 200
+    third_resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "Driver Contract", "stops": [{"listing_id": first_id, "eta_minutes": 20}]},
+    )
+    assert third_resp.status_code == 200
+    third_body = third_resp.get_json()
+
+    all_entries = (
+        first_body["notifications"]
+        + second_body["notifications"]
+        + third_body["notifications"]
+    )
+
+    # Current contract common fields.
+    for entry in all_entries:
+        assert "listing_id" in entry
+        assert "notification" in entry
+        # Documented known delta: backend does not include eta_minutes in notification entries.
+        assert "eta_minutes" not in entry
+
+    skipped_entries = [n for n in all_entries if n["notification"]["mode"] == "skipped"]
+    by_reason = {n["notification"]["reason"]: n for n in skipped_entries}
+    assert set(by_reason.keys()) >= {"duplicate_stop", "not_found", "already_claimed", "already_completed"}
+
+    # Heterogeneous shape currently emitted by backend route layer.
+    assert "household" not in by_reason["duplicate_stop"]
+    assert "phone" not in by_reason["duplicate_stop"]
+    assert "household" not in by_reason["not_found"]
+    assert "phone" not in by_reason["not_found"]
+    assert "household" in by_reason["already_claimed"]
+    assert "phone" in by_reason["already_claimed"]
+    assert "household" in by_reason["already_completed"]
+    assert "phone" in by_reason["already_completed"]
 
 
 def test_complete_listing_returns_conflict_if_already_completed():
