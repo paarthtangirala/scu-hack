@@ -2,9 +2,11 @@
 Route optimization + route acceptance endpoints.
 Owner: Atharva
 """
+from __future__ import annotations
+
 import logging
 import uuid
-from typing import Dict
+from typing import Dict, Tuple
 
 from flask import Blueprint, request, jsonify
 from backend.services.optimizer import RouteOptimizer
@@ -19,7 +21,7 @@ notifier = VoiceNotifier()
 logger = logging.getLogger(__name__)
 
 
-def _notify_with_retry(phone: str, household_name: str, eta_minutes: int, driver_name: str, attempts: int = 2) -> Dict:
+def _notify_with_retry(phone: str, household_name: str, eta_minutes: int, driver_name: str, attempts: int = 2) -> Tuple[Dict, int]:
     last_result: Dict = {"success": False, "mode": "failed", "error": "unknown"}
     for attempt in range(1, attempts + 1):
         result = notifier.notify(
@@ -31,9 +33,50 @@ def _notify_with_retry(phone: str, household_name: str, eta_minutes: int, driver
         if result.get("success"):
             if attempt > 1:
                 result["retry_attempt"] = attempt
-            return result
+            return result, attempt
         last_result = result
-    return last_result
+    return last_result, attempts
+
+
+def _build_stop_result(
+    *,
+    listing_id: str,
+    status_code: str,
+    retryable: bool,
+    success: bool,
+    notification: Dict,
+    household: str | None = None,
+    phone: str | None = None,
+    attempts: int = 0,
+) -> Dict:
+    result = {
+        "listing_id": listing_id,
+        "status_code": status_code,
+        "retryable": retryable,
+        "attempts": attempts,
+        "notification": notification,
+    }
+    if household is not None:
+        result["household"] = household
+    if phone is not None:
+        result["phone"] = phone
+    # Backward-compatibility for older frontend code paths that infer success via notification.
+    result["success"] = success
+    return result
+
+
+def _request_id_from_context(payload: Dict | None) -> str:
+    header_id = (request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID") or "").strip()
+    payload_id = ""
+    if isinstance(payload, dict):
+        payload_id = str(payload.get("request_id", "")).strip()
+
+    raw_id = header_id or payload_id
+    if raw_id:
+        cleaned = "".join(ch for ch in raw_id if ch.isalnum() or ch in {"-", "_", "."})
+        if cleaned:
+            return cleaned[:64]
+    return f"accept_{uuid.uuid4().hex[:12]}"
 
 @optimize_bp.post("/optimize-route")
 def optimize_route():
@@ -53,11 +96,12 @@ def optimize_route():
 
 @optimize_bp.post("/accept-route")
 def accept_route():
-    payload, errors = validate_accept_route_payload(request.get_json(silent=True))
+    raw_payload = request.get_json(silent=True)
+    payload, errors = validate_accept_route_payload(raw_payload)
     if errors:
         return error(code="validation_error", message="Invalid accept-route payload", status=422, errors=errors)
 
-    request_id = f"accept_{uuid.uuid4().hex[:12]}"
+    request_id = _request_id_from_context(raw_payload)
     route_stops = payload["stops"]
     driver_name = payload["driver_name"]
     notifications = []
@@ -72,10 +116,14 @@ def accept_route():
         if lid in processed_ids:
             skipped_count += 1
             notifications.append(
-                {
-                    "listing_id": lid,
-                    "notification": {"success": False, "mode": "skipped", "reason": "duplicate_stop"},
-                }
+                _build_stop_result(
+                    listing_id=lid,
+                    status_code="duplicate_stop",
+                    retryable=False,
+                    success=False,
+                    attempts=0,
+                    notification={"success": False, "mode": "skipped", "reason": "duplicate_stop"},
+                )
             )
             continue
         processed_ids.add(lid)
@@ -84,7 +132,14 @@ def accept_route():
         if not listing:
             skipped_count += 1
             notifications.append(
-                {"listing_id": lid, "notification": {"success": False, "mode": "skipped", "reason": "not_found"}}
+                _build_stop_result(
+                    listing_id=lid,
+                    status_code="listing_not_found",
+                    retryable=False,
+                    success=False,
+                    attempts=0,
+                    notification={"success": False, "mode": "skipped", "reason": "not_found"},
+                )
             )
             continue
 
@@ -92,41 +147,50 @@ def accept_route():
         if claim_result != "claimed":
             skipped_count += 1
             notifications.append(
-                {
-                    "listing_id": lid,
-                    "household": listing.household_name,
-                    "phone": listing.phone,
-                    "notification": {"success": False, "mode": "skipped", "reason": claim_result},
-                }
+                _build_stop_result(
+                    listing_id=lid,
+                    status_code=claim_result,
+                    retryable=False,
+                    success=False,
+                    household=listing.household_name,
+                    phone=listing.phone,
+                    attempts=0,
+                    notification={"success": False, "mode": "skipped", "reason": claim_result},
+                )
             )
             continue
 
         claimed_count += 1
-        result = _notify_with_retry(
+        result, attempts_used = _notify_with_retry(
             phone=listing.phone,
             household_name=listing.household_name,
             eta_minutes=eta,
             driver_name=driver_name,
             attempts=2,
         )
+        status_code = "claimed_notified" if result.get("success") else "notification_failed"
         notifications.append(
-            {
-                "listing_id": lid,
-                "household": listing.household_name,
-                "phone": listing.phone,
-                "notification": result,
-            }
+            _build_stop_result(
+                listing_id=lid,
+                status_code=status_code,
+                retryable=not result.get("success", False),
+                success=bool(result.get("success")),
+                household=listing.household_name,
+                phone=listing.phone,
+                attempts=attempts_used,
+                notification=result,
+            )
         )
 
+    notifications_sent = len([n for n in notifications if n.get("notification", {}).get("success")])
     logger.info(
-        "accept-route processed",
-        extra={
-            "request_id": request_id,
-            "driver_name": driver_name,
-            "requested_stops": len(route_stops),
-            "claimed_count": claimed_count,
-            "skipped_count": skipped_count,
-        },
+        "accept-route processed request_id=%s driver_name=%s requested_stops=%d claimed_count=%d skipped_count=%d notifications_sent=%d",
+        request_id,
+        driver_name,
+        len(route_stops),
+        claimed_count,
+        skipped_count,
+        notifications_sent,
     )
 
     return jsonify(
@@ -137,7 +201,7 @@ def accept_route():
             "requested_stops": len(route_stops),
             "claimed_count": claimed_count,
             "skipped_count": skipped_count,
-            "notifications_sent": len([n for n in notifications if n.get("notification", {}).get("success")]),
+            "notifications_sent": notifications_sent,
             "notifications": notifications,
         }
     )

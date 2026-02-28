@@ -18,7 +18,7 @@ def get_listings():
         return error(
             code="validation_error",
             message="Invalid query params",
-            status=422,
+            status=400,
             errors=[{"field": "status", "message": f"Must be one of: all, {', '.join(sorted(VALID_STATUSES))}"}],
         )
 
@@ -29,7 +29,7 @@ def get_listings():
 def create_listing():
     payload, errors = validate_listing_payload(request.get_json(silent=True))
     if errors:
-        return error(code="validation_error", message="Invalid listing payload", status=422, errors=errors)
+        return error(code="validation_error", message="Invalid listing payload", status=400, errors=errors)
 
     listing = Listing(
         address=payload["address"],

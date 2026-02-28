@@ -1,6 +1,9 @@
 """
 API contract tests for validation, lifecycle, and route acceptance behavior.
 """
+from queue import Queue
+from threading import Thread
+
 from flask import Flask
 
 from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
@@ -31,10 +34,28 @@ def test_create_listing_requires_address():
             "household_name": "No Address",
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
     body = resp.get_json()
     assert body["error"] == "validation_error"
+    assert body["code"] == "validation_error"
+    assert "details" in body
     assert any(e["field"] == "address" for e in body["errors"])
+
+
+def test_create_listing_requires_household_name():
+    _reset()
+    client = _client()
+    resp = client.post(
+        "/api/listings",
+        json={
+            "address": "No Name Blvd",
+            "materials": [{"type": "cardboard", "lbs": 4}],
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["code"] == "validation_error"
+    assert any(e["field"] == "household_name" for e in body["details"])
 
 
 def test_create_listing_aggregates_duplicate_material_types():
@@ -63,7 +84,7 @@ def test_get_listings_rejects_invalid_status():
     _reset()
     client = _client()
     resp = client.get("/api/listings?status=paused")
-    assert resp.status_code == 422
+    assert resp.status_code == 400
     body = resp.get_json()
     assert body["error"] == "validation_error"
 
@@ -71,10 +92,10 @@ def test_get_listings_rejects_invalid_status():
 def test_classify_rejects_invalid_base64():
     client = _client()
     resp = client.post("/api/classify", json={"image_base64": "not_base64"})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
     body = resp.get_json()
-    assert body["error"] == "validation_error"
-    assert any(e["field"] == "image_base64" for e in body["errors"])
+    assert body["code"] == "validation_error"
+    assert any(e["field"] == "image_base64" for e in body["details"])
 
 
 def test_optimize_rejects_invalid_objective():
@@ -119,6 +140,8 @@ def test_accept_route_is_idempotent_for_duplicate_and_claimed_stops():
     body = resp.get_json()
     assert body["claimed_count"] == 2
     assert body["skipped_count"] == 2
+    assert "request_id" in body
+    assert all("status_code" in n and "retryable" in n and "attempts" in n for n in body["notifications"])
     reasons = [n["notification"].get("reason") for n in body["notifications"] if n["notification"]["mode"] == "skipped"]
     assert "duplicate_stop" in reasons
     assert "not_found" in reasons
@@ -130,7 +153,51 @@ def test_accept_route_is_idempotent_for_duplicate_and_claimed_stops():
     second_body = second_resp.get_json()
     assert second_body["claimed_count"] == 0
     assert second_body["skipped_count"] == 1
+    assert second_body["notifications"][0]["status_code"] == "already_claimed"
+    assert second_body["notifications"][0]["retryable"] is False
     assert second_body["notifications"][0]["notification"]["reason"] == "already_claimed"
+
+
+def test_accept_route_respects_external_correlation_id():
+    _reset()
+    client = _client()
+    target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "Corr Driver", "stops": [{"listing_id": target_id, "eta_minutes": 12}]},
+        headers={"X-Request-ID": "demo-correlation-123"},
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["request_id"] == "demo-correlation-123"
+
+
+def test_accept_route_prevents_double_claim_under_concurrency():
+    _reset()
+    listing_id = _client().get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    queue = Queue()
+
+    def worker(driver_name: str):
+        c = _client()
+        r = c.post(
+            "/api/accept-route",
+            json={"driver_name": driver_name, "stops": [{"listing_id": listing_id, "eta_minutes": 5}]},
+        )
+        queue.put(r.get_json())
+
+    t1 = Thread(target=worker, args=("D1",))
+    t2 = Thread(target=worker, args=("D2",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    first = queue.get()
+    second = queue.get()
+    claimed = sorted([first["claimed_count"], second["claimed_count"]])
+    assert claimed == [0, 1]
+    all_statuses = [n["status_code"] for body in (first, second) for n in body["notifications"]]
+    assert "already_claimed" in all_statuses
 
 
 def test_complete_listing_returns_conflict_if_already_completed():
@@ -167,6 +234,8 @@ def test_health_reports_status_counts():
     assert body["status"] == "ok"
     assert "status_counts" in body
     assert body["status_counts"]["completed"] >= 1
+    impact = client.get("/api/impact").get_json()
+    assert "status_counts" in impact
 
 
 def test_materials_endpoint_returns_rate_catalog():

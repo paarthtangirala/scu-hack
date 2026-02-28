@@ -45,7 +45,9 @@ def validate_listing_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dic
     if not address:
         errors.append({"field": "address", "message": "Address is required"})
 
-    name = _as_string(data.get("household_name")) or _as_string(data.get("name")) or "Anonymous"
+    name = _as_string(data.get("household_name")) or _as_string(data.get("name"))
+    if not name:
+        errors.append({"field": "household_name", "message": "household_name is required"})
     phone = _as_string(data.get("phone"))
     notes = _as_string(data.get("notes"))
 
