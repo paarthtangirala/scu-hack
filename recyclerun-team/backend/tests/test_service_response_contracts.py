@@ -211,7 +211,7 @@ def test_notify_with_retry_adds_retry_attempt_only_on_retry_success(monkeypatch)
 
     monkeypatch.setattr(optimize_route_module.notifier, "notify", _fake_notify)
 
-    result = optimize_route_module._notify_with_retry(
+    result, attempts_used = optimize_route_module._notify_with_retry(
         phone="+14085550101",
         household_name="Household",
         eta_minutes=12,
@@ -222,6 +222,7 @@ def test_notify_with_retry_adds_retry_attempt_only_on_retry_success(monkeypatch)
     assert result["success"] is True
     assert result["mode"] == "demo"
     assert result["retry_attempt"] == 2
+    assert attempts_used == 2
 
 
 def test_notify_with_retry_omits_retry_attempt_on_first_try_success(monkeypatch):
@@ -231,7 +232,7 @@ def test_notify_with_retry_omits_retry_attempt_on_first_try_success(monkeypatch)
         lambda **kwargs: {"success": True, "mode": "live", "call_sid": "CA999"},
     )
 
-    result = optimize_route_module._notify_with_retry(
+    result, attempts_used = optimize_route_module._notify_with_retry(
         phone="+14085550101",
         household_name="Household",
         eta_minutes=12,
@@ -242,3 +243,4 @@ def test_notify_with_retry_omits_retry_attempt_on_first_try_success(monkeypatch)
     assert result["success"] is True
     assert result["mode"] == "live"
     assert "retry_attempt" not in result
+    assert attempts_used == 1
