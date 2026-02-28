@@ -4,17 +4,19 @@ Owner: Atharva
 """
 from flask import Blueprint, request, jsonify
 from backend.services.vision import VisionClassifier
+from backend.services.validation import validate_classify_payload
+from backend.utils.http import error
 
 classify_bp = Blueprint("classify", __name__, url_prefix="/api")
 classifier = VisionClassifier()
 
 @classify_bp.post("/classify")
 def classify():
-    data = request.json
-    image_b64 = data.get("image_base64", "")
-    if not image_b64:
-        return jsonify({"error": "No image provided"}), 400
-    if "," in image_b64:
-        image_b64 = image_b64.split(",")[1]
+    image_b64, errors = validate_classify_payload(request.get_json(silent=True))
+    if errors:
+        return error(code="validation_error", message="Invalid classify payload", status=422, errors=errors)
+
     result = classifier.classify(image_b64)
-    return jsonify(result)
+    if not result:
+        return error(code="classifier_failed", message="Vision classifier did not return a response", status=502)
+    return jsonify(result), 200
