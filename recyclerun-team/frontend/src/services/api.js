@@ -2,18 +2,38 @@
  * API service layer — all backend calls in one place.
  * Owner: Sara
  * No other file should call fetch() directly.
+ *
+ * Every call returns { ok: true, data } on success
+ * or { ok: false, error, status } on failure — never throws, never returns null.
+ * status: 0 means network/parse error (no HTTP response received).
  */
-const BASE = 'http://localhost:5000/api';
+const BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000/api';
 
 async function request(path, options = {}) {
+  let res;
   try {
-    const res = await fetch(BASE + path, {
+    res = await fetch(BASE + path, {
       headers: { 'Content-Type': 'application/json' },
       ...options,
     });
-    return await res.json();
-  } catch {
-    return null; // caller handles null = offline/demo mode
+  } catch (err) {
+    return { ok: false, error: err.message ?? 'Network error', status: 0 };
+  }
+
+  if (!res.ok) {
+    let error = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      error = body.error ?? body.message ?? error;
+    } catch {}
+    return { ok: false, error, status: res.status };
+  }
+
+  try {
+    const data = await res.json();
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, error: 'Invalid JSON in response', status: res.status };
   }
 }
 
