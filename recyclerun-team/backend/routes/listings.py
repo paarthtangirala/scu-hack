@@ -25,6 +25,7 @@ def create_listing():
         lng=data.get("lng", -121.9552),
         household_name=data.get("household_name", "Anonymous"),
         phone=data.get("phone", ""),
+        listing_kind=data.get("listing_kind", "household"),
         notes=data.get("notes", ""),
         materials=materials,
     )

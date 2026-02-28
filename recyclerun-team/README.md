@@ -23,7 +23,7 @@
 | **AMD Developer Cloud** | Vision AI — photo → material classification | `backend/services/vision.py` |
 | **ElevenLabs** | Voice calls to households when driver accepts | `backend/services/voice.py` |
 | **Google Maps** | Route display + navigation | `frontend/src/pages/DriverPage.jsx` |
-| **Anthropic Claude** | Vision fallback (if AMD unavailable) | `backend/services/vision.py` |
+| (Optional) **Anthropic Claude** | Vision fallback (disabled by default) | `backend/services/vision.py` |
 
 ---
 
@@ -80,7 +80,7 @@ Flask Backend
 | POST | `/api/listings` | Atharva | Create new listing |
 | POST | `/api/listings/reset-demo` | Atharva | Reset all listings for demo |
 | POST | `/api/classify` | Atharva | AMD vision classification |
-| POST | `/api/optimize-route` | Atharva | Build optimized driver route |
+| POST | `/api/optimize-route` | Atharva | Build optimized driver route (supports `objective: "value"` or `"lbs"`) |
 | POST | `/api/accept-route` | Atharva | Accept + trigger ElevenLabs calls |
 | GET | `/api/impact` | Atharva | Community stats |
 | GET | `/api/materials` | Atharva | Material rates |

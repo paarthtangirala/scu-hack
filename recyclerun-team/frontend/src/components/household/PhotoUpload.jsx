@@ -14,12 +14,37 @@ export function PhotoUpload({ onResult }) {
   const [result, setResult] = useState(null);
   const inputRef = useRef();
 
+  async function downscaleToJpeg(dataUrl, { maxSide = 1024, quality = 0.85 } = {}) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const w = img.width || 1;
+        const h = img.height || 1;
+        const scale = Math.min(1, maxSide / Math.max(w, h));
+        const outW = Math.max(1, Math.round(w * scale));
+        const outH = Math.max(1, Math.round(h * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = outW;
+        canvas.height = outH;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, outW, outH);
+
+        // Always send JPEG to keep backend AMD payload consistent (`data:image/jpeg;base64,...`).
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => resolve(dataUrl); // fallback: send original
+      img.src = dataUrl;
+    });
+  }
+
   async function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const dataUrl = ev.target.result;
+      const raw = ev.target.result;
+      const dataUrl = await downscaleToJpeg(raw, { maxSide: 1024, quality: 0.85 });
       setPreview(dataUrl);
       setScanning(true);
       const res = await api.classifyImage(dataUrl);
@@ -71,7 +96,7 @@ export function PhotoUpload({ onResult }) {
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.75rem' }}>
             <span style={{ fontSize:'0.78rem', fontWeight:700, color:'var(--muted)', fontFamily:'var(--mono)', letterSpacing:'0.05em' }}>AI SCAN RESULTS</span>
             <Tag color={result.source === 'amd' ? 'green' : result.source === 'claude' ? 'green' : 'amber'}>
-              {result.source === 'amd' ? '✓ AMD Vision' : result.source === 'claude' ? '✓ Claude Vision' : 'Demo mode'}
+              {result.source === 'amd' ? '✓ AMD Vision' : result.source === 'claude' ? '✓ Backup Vision' : 'Demo mode'}
             </Tag>
           </div>
           {result.materials.map((m, i) => (

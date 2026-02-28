@@ -5,7 +5,7 @@ Owner: Paarth
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List
+from typing import List, Dict, Any
 
 @dataclass
 class RouteStop:
@@ -20,6 +20,9 @@ class RouteStop:
     distance_from_prev: float
     travel_minutes: float
     eta_minutes: int
+    listing_kind: str = "household"
+    # Included so the driver UI can show what they're picking up at each stop.
+    materials: List[Dict[str, Any]] = field(default_factory=list)
     notes: str = ""
     status: str = "pending"   # pending | arrived | completed
 

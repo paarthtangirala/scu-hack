@@ -13,16 +13,16 @@ export function useRoute(listings) {
   const [accepted, setAccepted] = useState(false);
   const [notifications, setNotifications] = useState([]);
 
-  const build = async ({ lat, lng, maxMinutes, truckCapacity }) => {
+  const build = async ({ lat, lng, maxMinutes, truckCapacity, objective }) => {
     setLoading(true);
-    const data = await api.optimizeRoute({ lat, lng, maxMinutes, truckCapacity });
+    const data = await api.optimizeRoute({ lat, lng, maxMinutes, truckCapacity, objective });
     if (data?.stops) {
       setRoute(data);
     } else {
       // client-side fallback
       setRoute(optimizeRoute({ driverLat: lat, driverLng: lng,
         listings: listings.length ? listings : DEMO_LISTINGS,
-        maxMinutes, truckCapacityLbs: truckCapacity }));
+        maxMinutes, truckCapacityLbs: truckCapacity, objective }));
     }
     setLoading(false);
   };

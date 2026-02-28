@@ -15,6 +15,7 @@ class Listing:
     lng: float
     household_name: str
     phone: str
+    listing_kind: str = "household"  # household | business (demo uses this for mixed markets)
     materials: List[Material] = field(default_factory=list)
     notes: str = ""
     id: str = field(default_factory=lambda: f"listing_{str(uuid.uuid4())[:8]}")
@@ -38,6 +39,7 @@ class Listing:
             "lng": self.lng,
             "household_name": self.household_name,
             "phone": self.phone,
+            "listing_kind": self.listing_kind,
             "materials": [m.to_dict() for m in self.materials],
             "notes": self.notes,
             "status": self.status,

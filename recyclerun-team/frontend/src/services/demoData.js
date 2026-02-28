@@ -63,6 +63,28 @@ export const DEMO_LISTINGS = [
     household_name:"Hernandez Family",   total_value:29.13, total_lbs:41.0, status:"available",
     notes:"Big family accumulation",
     materials:[{type:"aluminum_cans",lbs:11.0,value:18.15},{type:"plastic_pet",lbs:6.0,value:7.86}]},
+
+  // Small businesses (opt-in partners) - heavier loads, fewer stops.
+  { id:"listing_016", address:"2525 Augustine Dr, Santa Clara",     lat:37.3732, lng:-121.9828,
+    household_name:"Mailroom Partner (Business)", listing_kind:"business", total_value:14.60, total_lbs:380.0, status:"available",
+    notes:"Flattened boxes behind loading dock (8-11am)",
+    materials:[{type:"cardboard",lbs:320.0,value:12.80},{type:"newspaper",lbs:60.0,value:1.80}]},
+  { id:"listing_017", address:"1111 Morse Ave, Sunnyvale",          lat:37.3877, lng:-122.0176,
+    household_name:"Retail Stockroom (Business)", listing_kind:"business", total_value:18.00, total_lbs:460.0, status:"available",
+    notes:"Pallet of broken-down boxes, ready to load",
+    materials:[{type:"cardboard",lbs:420.0,value:16.80},{type:"newspaper",lbs:40.0,value:1.20}]},
+  { id:"listing_018", address:"99 S Market St, San Jose",           lat:37.3346, lng:-121.8916,
+    household_name:"Event Venue Cleanup (Business)", listing_kind:"business", total_value:44.60, total_lbs:73.0, status:"available",
+    notes:"Weekend event leftovers (sorted bags)",
+    materials:[{type:"aluminum_cans",lbs:18.0,value:29.70},{type:"plastic_pet",lbs:10.0,value:13.10},{type:"cardboard",lbs:45.0,value:1.80}]},
+  { id:"listing_019", address:"700 Lawrence Expy, Santa Clara",     lat:37.3681, lng:-121.9952,
+    household_name:"Hardware Shop (Business)", listing_kind:"business", total_value:22.50, total_lbs:215.0, status:"available",
+    notes:"Old shelving + packaging (tie-down needed)",
+    materials:[{type:"scrap_metal_mixed",lbs:35.0,value:10.50},{type:"steel_iron",lbs:120.0,value:9.60},{type:"cardboard",lbs:60.0,value:2.40}]},
+  { id:"listing_020", address:"3250 Scott Blvd, Santa Clara",       lat:37.3756, lng:-121.9727,
+    household_name:"Cafe + Roastery (Business)", listing_kind:"business", total_value:10.20, total_lbs:228.0, status:"available",
+    notes:"Back alley bins, clean/dry only",
+    materials:[{type:"cardboard",lbs:210.0,value:8.40},{type:"glass_bottles",lbs:18.0,value:1.80}]},
 ];
 
 export const MATERIAL_RATES = {

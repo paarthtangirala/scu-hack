@@ -8,7 +8,7 @@ import { MATERIAL_RATES } from '../services/demoData';
 export function HouseholdPage({ onToast }) {
   const [aiResult, setAiResult] = useState(null);
   const [manualMats, setManualMats] = useState([]);
-  const [form, setForm] = useState({ name:'', address:'', phone:'', notes:'' });
+  const [form, setForm] = useState({ listing_kind:'household', name:'', address:'', phone:'', notes:'' });
 
   async function post() {
     if (!form.name || !form.address) { onToast('⚠️ Please enter name and address'); return; }
@@ -24,7 +24,7 @@ export function HouseholdPage({ onToast }) {
     const lng = -121.9552 + (Math.random() - 0.5) * 0.05;
     await api.createListing({ ...form, household_name: form.name, lat, lng, materials });
     onToast('✅ Listing posted! Drivers nearby have been notified.');
-    setForm({ name:'', address:'', phone:'', notes:'' }); setAiResult(null); setManualMats([]);
+    setForm({ listing_kind:'household', name:'', address:'', phone:'', notes:'' }); setAiResult(null); setManualMats([]);
   }
 
   return (
@@ -39,6 +39,13 @@ export function HouseholdPage({ onToast }) {
         <div>
           <div className="card">
             <div className="section-label">STEP 2 — YOUR DETAILS</div>
+            <div className="form-group">
+              <label>POSTING AS</label>
+              <select value={form.listing_kind} onChange={e => setForm({ ...form, listing_kind: e.target.value })}>
+                <option value="household">Household</option>
+                <option value="business">Small business</option>
+              </select>
+            </div>
             {['name','address','phone','notes'].map(field => (
               <div className="form-group" key={field}>
                 <label>{field.toUpperCase()}</label>

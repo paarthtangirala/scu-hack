@@ -6,6 +6,8 @@ import { MATERIAL_RATES } from '../../services/demoData';
 import { Tag } from '../ui/Tag';
 
 export function StopCard({ stop, index, completed, onComplete }) {
+  const kind = (stop.listing_kind || 'household').toLowerCase();
+  const who = kind === 'business' ? `🏪 ${stop.household_name}` : stop.household_name;
   return (
     <div className={`stop-card ${completed ? 'completed-stop' : ''}`}>
       <div className={`stop-num ${completed ? 'done' : ''}`}>
@@ -14,7 +16,7 @@ export function StopCard({ stop, index, completed, onComplete }) {
       <div className="stop-body">
         <div className="stop-addr">{stop.address}</div>
         <div className="stop-meta">
-          {stop.household_name} · {stop.distance_from_prev} mi away · {stop.travel_minutes} min drive
+          {who} · {stop.distance_from_prev} mi away · {stop.travel_minutes} min drive
         </div>
         {stop.notes && (
           <div className="stop-meta" style={{ color:'var(--amber)', marginTop:'0.2rem' }}>

@@ -36,10 +36,10 @@ export const api = {
     request('/classify', { method: 'POST', body: JSON.stringify({ image_base64: base64 }) }),
 
   // Route
-  optimizeRoute: ({ lat, lng, maxMinutes, truckCapacity }) =>
+  optimizeRoute: ({ lat, lng, maxMinutes, truckCapacity, objective }) =>
     request('/optimize-route', {
       method: 'POST',
-      body: JSON.stringify({ lat, lng, max_minutes: maxMinutes, truck_capacity_lbs: truckCapacity }),
+      body: JSON.stringify({ lat, lng, max_minutes: maxMinutes, truck_capacity_lbs: truckCapacity, objective }),
     }),
 
   acceptRoute: ({ stops, driverName }) =>

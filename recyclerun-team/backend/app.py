@@ -1,11 +1,20 @@
 """
 RecycleRun Flask application entry point.
 """
+from pathlib import Path
+
+from dotenv import load_dotenv
 from flask import Flask
 from flask_cors import CORS
 from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
 
 def create_app():
+    # Load .env from repo root by default so API keys work in hackathon demos.
+    repo_root = Path(__file__).resolve().parents[1]
+    load_dotenv(repo_root / ".env")
+    load_dotenv(repo_root / ".env.local")
+    load_dotenv(repo_root / "backend" / ".env")
+
     app = Flask(__name__)
     CORS(app)
     app.register_blueprint(listings_bp)

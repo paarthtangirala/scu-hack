@@ -1,5 +1,5 @@
 """
-AI vision classification — AMD primary, Claude fallback.
+AI vision classification — AMD primary.
 Owner: Soham
 """
 import os, re, json
@@ -25,7 +25,9 @@ class VisionClassifier:
     def classify(self, base64_image: str) -> dict:
         result = self._try_amd(base64_image)
         if not result:
-            result = self._try_claude(base64_image)
+            # Keep demos sponsor-forward: only use non-AMD fallback if explicitly enabled.
+            if os.environ.get("ENABLE_CLAUDE_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
+                result = self._try_claude(base64_image)
         if not result:
             result = self._demo_result()
         return result
@@ -34,12 +36,13 @@ class VisionClassifier:
         key = os.environ.get("AMD_API_KEY")
         if not key:
             return None
+        model = os.environ.get("AMD_VISION_MODEL", "meta-llama/Llama-3.2-11B-Vision-Instruct")
         try:
             r = requests.post(
                 "https://api.amd.developer.cloud/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={
-                    "model": "meta-llama/Llama-3.2-11B-Vision-Instruct",
+                    "model": model,
                     "messages": [{"role": "user", "content": [
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                         {"type": "text", "text": VISION_PROMPT}

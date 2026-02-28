@@ -43,11 +43,29 @@ class ListingStore:
              [("ewaste_crt",52.0),("steel_iron",18.0)],                         "3 large CRT TVs. Very heavy."),
             ("2890 Moorpark Ave, San Jose",    37.3301, -121.9712, "Hernandez Family",  "+14085550115",
              [("aluminum_cans",11.0),("plastic_pet",6.0),("plastic_hdpe",4.0),("cardboard",20.0)],"Big family"),
+
+            # Small businesses (opt-in partners). These are impact-heavy and help fill a truck quickly.
+            ("2525 Augustine Dr, Santa Clara",  37.3732, -121.9828, "Mailroom Partner (Business)", "+14085550201",
+             [("cardboard",320.0),("newspaper",60.0)], "Flattened boxes behind loading dock (8-11am)", "business"),
+            ("3250 Scott Blvd, Santa Clara",    37.3756, -121.9727, "Cafe + Roastery (Business)", "+14085550202",
+             [("cardboard",210.0),("glass_bottles",18.0)], "Back alley bins, clean/dry only", "business"),
+            ("99 S Market St, San Jose",        37.3346, -121.8916, "Event Venue Cleanup (Business)", "+14085550203",
+             [("aluminum_cans",18.0),("plastic_pet",10.0),("cardboard",45.0)], "Weekend event leftovers (sorted bags)", "business"),
+            ("1111 Morse Ave, Sunnyvale",       37.3877, -122.0176, "Retail Stockroom (Business)", "+14085550204",
+             [("cardboard",420.0),("newspaper",40.0)], "Pallet of broken-down boxes, ready to load", "business"),
+            ("700 Lawrence Expy, Santa Clara",  37.3681, -121.9952, "Hardware Shop (Business)", "+14085550205",
+             [("scrap_metal_mixed",35.0),("steel_iron",120.0),("cardboard",60.0)], "Old shelving + packaging (tie-down needed)", "business"),
         ]
-        for addr, lat, lng, name, phone, mats, notes in seed_data:
+        for item in seed_data:
+            if len(item) == 8:
+                addr, lat, lng, name, phone, mats, notes, kind = item
+            else:
+                addr, lat, lng, name, phone, mats, notes = item
+                kind = "household"
             listing = Listing(
                 address=addr, lat=lat, lng=lng,
                 household_name=name, phone=phone, notes=notes,
+                listing_kind=kind,
                 materials=[Material(type=m[0], lbs=m[1]) for m in mats]
             )
             self._listings[listing.id] = listing

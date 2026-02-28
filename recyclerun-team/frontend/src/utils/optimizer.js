@@ -13,7 +13,8 @@ export function haversine(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truckCapacityLbs = 1000 }) {
+export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truckCapacityLbs = 1000, objective = 'value' }) {
+  objective = (objective || 'value').toString().toLowerCase();
   const available = listings.filter(l => l.status === 'available');
   const route = [], visited = new Set();
   let curLat = driverLat, curLng = driverLng;
@@ -28,7 +29,8 @@ export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truc
       const travel = (dist / MPH) * 60;
       const total = travel + STOP_TIME;
       if (total > remainingTime) continue;
-      const score = l.total_value / Math.max(total, 0.01);
+      const prize = objective === 'lbs' ? l.total_lbs : l.total_value;
+      const score = prize / Math.max(total, 0.01);
       if (score > bestScore) { best = l; bestScore = score; bestDist = dist; bestTravel = travel; }
     }
     if (!best) break;
@@ -48,6 +50,8 @@ export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truc
   }
 
   const totalLbs = route.reduce((a, s) => a + s.total_lbs, 0);
+  const estMinutes = Math.round(route.reduce((a, s) => a + s.travel_minutes + STOP_TIME, 0));
+  const hrs = Math.max(estMinutes / 60, 1e-6);
   return {
     stops: route,
     summary: {
@@ -56,7 +60,9 @@ export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truc
       total_lbs: Math.round(totalLbs * 10) / 10,
       total_miles: Math.round(route.reduce((a, s) => a + s.distance_from_prev, 0) * 10) / 10,
       truck_fill_pct: Math.round((totalLbs / truckCapacityLbs) * 1000) / 10,
-      estimated_minutes: Math.round(route.reduce((a, s) => a + s.travel_minutes + STOP_TIME, 0)),
+      estimated_minutes: estMinutes,
+      lbs_per_hour: Math.round((totalLbs / hrs) * 10) / 10,
+      objective: objective === 'lbs' ? 'lbs' : 'value',
     }
   };
 }

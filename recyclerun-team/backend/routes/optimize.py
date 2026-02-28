@@ -21,6 +21,7 @@ def optimize_route():
         listings=store.all("available"),
         max_minutes=data.get("max_minutes", 120),
         truck_capacity_lbs=data.get("truck_capacity_lbs", 1000),
+        objective=data.get("objective", "value"),
     )
     return jsonify({"stops": [s.to_dict() for s in stops], "summary": summary})
 
