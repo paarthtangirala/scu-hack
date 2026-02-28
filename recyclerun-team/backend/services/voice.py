@@ -2,8 +2,6 @@
 ElevenLabs + Twilio voice notification service.
 Owner: Soham
 """
-from __future__ import annotations
-
 import os
 import requests
 

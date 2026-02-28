@@ -3,30 +3,13 @@ In-memory listing store with seed data.
 Owner: Soham
 Replace with Firebase in production.
 """
-from __future__ import annotations
-
-import threading
-from typing import Dict, List
-
 from backend.models.listing import Listing
 from backend.models.material import Material
 
-
-VALID_STATUSES = {"available", "claimed", "completed"}
-STATUS_TRANSITIONS = {
-    "available": {"claimed", "completed"},
-    "claimed": {"available", "completed"},
-    "completed": set(),
-}
-
-
 class ListingStore:
     def __init__(self):
-        self._lock = threading.RLock()
-        self._listings: Dict[str, Listing] = {}
-        self._seed_count = 0
+        self._listings: dict[str, Listing] = {}
         self._seed()
-        self._seed_count = len(self._listings)
 
     def _seed(self):
         seed_data = [
@@ -87,95 +70,31 @@ class ListingStore:
             )
             self._listings[listing.id] = listing
 
-    def all(self, status: str = "available") -> List[Listing]:
-        with self._lock:
-            if status in (None, "all"):
-                return list(self._listings.values())
-            if status not in VALID_STATUSES:
-                raise ValueError(f"Unsupported status '{status}'")
-            return [l for l in self._listings.values() if l.status == status]
+    def all(self, status="available"):
+        return [l for l in self._listings.values() if l.status == status]
 
-    def get(self, listing_id: str) -> Listing | None:
-        with self._lock:
-            return self._listings.get(listing_id)
+    def get(self, listing_id: str):
+        return self._listings.get(listing_id)
 
-    def add(self, listing: Listing) -> Listing:
-        with self._lock:
-            self._listings[listing.id] = listing
-            return listing
+    def add(self, listing: Listing):
+        self._listings[listing.id] = listing
+        return listing
 
-    def update_status(self, listing_id: str, status: str) -> bool:
-        new_status = (status or "").strip().lower()
-        if new_status not in VALID_STATUSES:
-            raise ValueError(f"Unsupported status '{status}'")
-
-        with self._lock:
-            listing = self._listings.get(listing_id)
-            if listing is None:
-                return False
-
-            cur = listing.status
-            if cur == new_status:
-                return True
-            allowed = STATUS_TRANSITIONS.get(cur, set())
-            if new_status not in allowed:
-                raise ValueError(f"Invalid status transition '{cur}' -> '{new_status}'")
-
-            listing.status = new_status
-            return True
-
-    def claim_listing(self, listing_id: str) -> str:
-        """
-        Claim a listing if and only if it is currently available.
-        Returns: claimed | not_found | already_claimed | already_completed
-        """
-        with self._lock:
-            listing = self._listings.get(listing_id)
-            if listing is None:
-                return "not_found"
-            if listing.status == "available":
-                listing.status = "claimed"
-                return "claimed"
-            if listing.status == "claimed":
-                return "already_claimed"
-            return "already_completed"
-
-    def reset_demo(self):
-        """Restore deterministic demo seed inventory and statuses."""
-        with self._lock:
-            self._listings.clear()
-            self._seed()
+    def update_status(self, listing_id: str, status: str):
+        if listing_id in self._listings:
+            self._listings[listing_id].status = status
 
     def reset_all(self):
-        # Backward-compatible alias used by existing route handlers.
-        self.reset_demo()
-
-    def status_counts(self) -> Dict[str, int]:
-        with self._lock:
-            counts = {s: 0 for s in sorted(VALID_STATUSES)}
-            for listing in self._listings.values():
-                if listing.status in counts:
-                    counts[listing.status] += 1
-            return counts
+        for l in self._listings.values():
+            l.status = "available"
 
     def impact_stats(self):
-        with self._lock:
-            completed = [l for l in self._listings.values() if l.status == "completed"]
-            total_lbs = sum(l.total_lbs for l in completed)
-            return {
-                "completed_pickups": len(completed),
-                "total_lbs_diverted": round(total_lbs, 1),
-                "total_value_paid": round(sum(l.total_value for l in completed), 2),
-                "co2_saved_lbs": round(total_lbs * 0.5, 1),
-                "co2_saved_tons": round(total_lbs * 0.5 / 2000, 3),
-            }
-
-    def health_stats(self) -> Dict[str, object]:
-        counts = self.status_counts()
-        total = sum(counts.values())
+        completed = [l for l in self._listings.values() if l.status == "completed"]
+        total_lbs = sum(l.total_lbs for l in completed)
         return {
-            "status": "ok",
-            "total_listings": total,
-            "seeded_listings": self._seed_count,
-            "status_counts": counts,
+            "completed_pickups": len(completed),
+            "total_lbs_diverted": round(total_lbs, 1),
+            "total_value_paid": round(sum(l.total_value for l in completed), 2),
+            "co2_saved_lbs": round(total_lbs * 0.5, 1),
+            "co2_saved_tons": round(total_lbs * 0.5 / 2000, 3),
         }
