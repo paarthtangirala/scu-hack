@@ -1,0 +1,49 @@
+/* Component styles — Owner: Anisha */
+@import './variables.css';
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 0.5rem;
+  padding: 0.65rem 1.25rem; border-radius: var(--radius);
+  font-family: var(--sans); font-size: 0.9rem; font-weight: 600;
+  cursor: pointer; transition: all 0.15s; border: none;
+}
+.btn-primary  { background: var(--green); color: var(--bg); }
+.btn-primary:hover  { opacity: 0.9; transform: translateY(-1px); }
+.btn-secondary{ background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--green-dim); }
+.btn-lg { padding: 0.9rem 2rem; font-size: 1rem; border-radius: var(--radius-lg); }
+.btn-full { width: 100%; justify-content: center; }
+
+/* Cards */
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 1.5rem;
+  transition: border-color 0.2s;
+}
+.card:hover { border-color: var(--green-dim); }
+
+/* Tags */
+.tag {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.25rem 0.6rem; border-radius: 6px;
+  font-size: 0.75rem; font-weight: 600; font-family: var(--mono);
+}
+.tag-green { background: var(--green-bg); color: var(--green); border: 1px solid rgba(0,232,122,0.15); }
+.tag-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(245,166,35,0.15); }
+
+/* Spinner */
+.spinner {
+  width: 20px; height: 20px; border: 2px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.6s linear infinite; display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}

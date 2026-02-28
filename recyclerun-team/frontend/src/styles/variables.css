@@ -1,0 +1,19 @@
+/* RecycleRun Design Tokens — Owner: Anisha */
+:root {
+  --bg:        #0a0f0a;
+  --surface:   #111811;
+  --card:      #161e16;
+  --border:    #1f2d1f;
+  --green:     #00e87a;
+  --green-dim: #00a855;
+  --green-bg:  rgba(0,232,122,0.06);
+  --amber:     #f5a623;
+  --amber-bg:  rgba(245,166,35,0.08);
+  --red:       #ff4757;
+  --text:      #e8f0e8;
+  --muted:     #6b8c6b;
+  --mono:      'DM Mono', monospace;
+  --sans:      'Syne', sans-serif;
+  --radius:    12px;
+  --radius-lg: 16px;
+}
