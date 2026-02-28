@@ -45,7 +45,9 @@ def validate_listing_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dic
     if not address:
         errors.append({"field": "address", "message": "Address is required"})
 
-    name = _as_string(data.get("household_name")) or _as_string(data.get("name")) or "Anonymous"
+    name = _as_string(data.get("household_name")) or _as_string(data.get("name"))
+    if not name:
+        errors.append({"field": "household_name", "message": "household_name is required"})
     phone = _as_string(data.get("phone"))
     notes = _as_string(data.get("notes"))
 
@@ -70,7 +72,7 @@ def validate_listing_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dic
         errors.append({"field": "materials", "message": "At least one material is required"})
         raw_materials = []
 
-    aggregated: Dict[str, float] = {}
+    materials: List[Material] = []
     for idx, item in enumerate(raw_materials):
         field = f"materials[{idx}]"
         if not isinstance(item, dict):
@@ -92,12 +94,12 @@ def validate_listing_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dic
             errors.append({"field": f"{field}.lbs", "message": "Must be <= 5000"})
             continue
 
-        aggregated[m_type] = round(aggregated.get(m_type, 0.0) + lbs, 2)
+        # Preserve submitted order and values for valid payloads.
+        materials.append(Material(type=m_type, lbs=lbs))
 
     if errors:
         return None, errors
 
-    materials = [Material(type=m_type, lbs=round(lbs, 1)) for m_type, lbs in aggregated.items()]
     normalized = {
         "address": address,
         "lat": float(lat),

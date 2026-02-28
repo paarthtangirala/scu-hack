@@ -6,6 +6,7 @@ Replace with Firebase in production.
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from typing import Dict, List
 
 from backend.models.listing import Listing
@@ -15,7 +16,7 @@ from backend.models.material import Material
 VALID_STATUSES = {"available", "claimed", "completed"}
 STATUS_TRANSITIONS = {
     "available": {"claimed", "completed"},
-    "claimed": {"available", "completed"},
+    "claimed": {"completed"},
     "completed": set(),
 }
 
@@ -24,6 +25,7 @@ class ListingStore:
     def __init__(self):
         self._lock = threading.RLock()
         self._listings: Dict[str, Listing] = {}
+        self._accept_route_results: Dict[str, Dict[str, object]] = {}
         self._seed_count = 0
         self._seed()
         self._seed_count = len(self._listings)
@@ -144,6 +146,7 @@ class ListingStore:
         """Restore deterministic demo seed inventory and statuses."""
         with self._lock:
             self._listings.clear()
+            self._accept_route_results.clear()
             self._seed()
 
     def reset_all(self):
@@ -162,12 +165,17 @@ class ListingStore:
         with self._lock:
             completed = [l for l in self._listings.values() if l.status == "completed"]
             total_lbs = sum(l.total_lbs for l in completed)
+            counts = {s: 0 for s in sorted(VALID_STATUSES)}
+            for listing in self._listings.values():
+                if listing.status in counts:
+                    counts[listing.status] += 1
             return {
                 "completed_pickups": len(completed),
                 "total_lbs_diverted": round(total_lbs, 1),
                 "total_value_paid": round(sum(l.total_value for l in completed), 2),
                 "co2_saved_lbs": round(total_lbs * 0.5, 1),
                 "co2_saved_tons": round(total_lbs * 0.5 / 2000, 3),
+                "status_counts": counts,
             }
 
     def health_stats(self) -> Dict[str, object]:
@@ -179,3 +187,12 @@ class ListingStore:
             "seeded_listings": self._seed_count,
             "status_counts": counts,
         }
+
+    def get_accept_route_result(self, request_id: str) -> Dict[str, object] | None:
+        with self._lock:
+            value = self._accept_route_results.get(request_id)
+            return deepcopy(value) if value is not None else None
+
+    def save_accept_route_result(self, request_id: str, response: Dict[str, object]) -> None:
+        with self._lock:
+            self._accept_route_results[request_id] = deepcopy(response)

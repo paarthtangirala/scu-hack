@@ -14,7 +14,7 @@ classifier = VisionClassifier()
 def classify():
     image_b64, errors = validate_classify_payload(request.get_json(silent=True))
     if errors:
-        return error(code="validation_error", message="Invalid classify payload", status=422, errors=errors)
+        return error(code="validation_error", message="Invalid classify payload", status=400, errors=errors)
 
     result = classifier.classify(image_b64)
     if not result:
