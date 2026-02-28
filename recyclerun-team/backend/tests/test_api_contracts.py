@@ -5,6 +5,7 @@ from queue import Queue
 from threading import Thread
 
 from flask import Flask
+import pytest
 
 from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
 from backend.services.store import store
@@ -58,7 +59,7 @@ def test_create_listing_requires_household_name():
     assert any(e["field"] == "household_name" for e in body["details"])
 
 
-def test_create_listing_aggregates_duplicate_material_types():
+def test_create_listing_preserves_valid_material_payload_unchanged():
     _reset()
     client = _client()
     resp = client.post(
@@ -75,9 +76,8 @@ def test_create_listing_aggregates_duplicate_material_types():
     )
     assert resp.status_code == 201
     listing = resp.get_json()["listing"]
-    mats = {m["type"]: m["lbs"] for m in listing["materials"]}
-    assert mats["cardboard"] == 4.0
-    assert mats["aluminum_cans"] == 2.0
+    assert [m["type"] for m in listing["materials"]] == ["cardboard", "cardboard", "aluminum_cans"]
+    assert [m["lbs"] for m in listing["materials"]] == [1.25, 2.75, 2.0]
 
 
 def test_get_listings_rejects_invalid_status():
@@ -111,10 +111,10 @@ def test_optimize_rejects_invalid_objective():
             "objective": "speedrun",
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
     body = resp.get_json()
-    assert body["error"] == "validation_error"
-    assert any(e["field"] == "objective" for e in body["errors"])
+    assert body["code"] == "validation_error"
+    assert any(e["field"] == "objective" for e in body["details"])
 
 
 def test_accept_route_is_idempotent_for_duplicate_and_claimed_stops():
@@ -170,6 +170,32 @@ def test_accept_route_respects_external_correlation_id():
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["request_id"] == "demo-correlation-123"
+    assert body["idempotent_replay"] is False
+
+
+def test_accept_route_replay_with_same_request_id_is_side_effect_free():
+    _reset()
+    client = _client()
+    target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    payload = {
+        "request_id": "stable-request-77",
+        "driver_name": "Replay Driver",
+        "stops": [{"listing_id": target_id, "eta_minutes": 12}],
+    }
+
+    first = client.post("/api/accept-route", json=payload, headers={"X-Request-ID": "stable-request-77"})
+    second = client.post("/api/accept-route", json=payload, headers={"X-Request-ID": "stable-request-77"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    body1 = first.get_json()
+    body2 = second.get_json()
+
+    assert body1["request_id"] == "stable-request-77"
+    assert body2["request_id"] == "stable-request-77"
+    assert body1["idempotent_replay"] is False
+    assert body2["idempotent_replay"] is True
+    assert body1["claimed_count"] == body2["claimed_count"] == 1
+    assert body1["notifications_sent"] == body2["notifications_sent"] == 1
 
 
 def test_accept_route_prevents_double_claim_under_concurrency():
@@ -198,6 +224,18 @@ def test_accept_route_prevents_double_claim_under_concurrency():
     assert claimed == [0, 1]
     all_statuses = [n["status_code"] for body in (first, second) for n in body["notifications"]]
     assert "already_claimed" in all_statuses
+
+
+def test_claimed_listing_cannot_transition_back_to_available():
+    _reset()
+    client = _client()
+    listing_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    client.post(
+        "/api/accept-route",
+        json={"driver_name": "Lifecycle Guard", "stops": [{"listing_id": listing_id, "eta_minutes": 6}]},
+    )
+    with pytest.raises(ValueError):
+        store.update_status(listing_id, "available")
 
 
 def test_complete_listing_returns_conflict_if_already_completed():
@@ -267,3 +305,11 @@ def test_reset_demo_restores_seeded_inventory_after_mutation():
     assert reset_resp.status_code == 200
     after_reset = client.get("/api/health").get_json()["total_listings"]
     assert after_reset == baseline
+
+
+def test_reset_demo_restores_business_seed_listings():
+    _reset()
+    client = _client()
+    listings = client.get("/api/listings?status=all").get_json()["listings"]
+    business_count = len([l for l in listings if l.get("listing_kind") == "business"])
+    assert business_count > 0

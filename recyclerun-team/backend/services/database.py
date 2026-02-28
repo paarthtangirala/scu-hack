@@ -6,6 +6,7 @@ Replace with Firebase in production.
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from typing import Dict, List
 
 from backend.models.listing import Listing
@@ -15,7 +16,7 @@ from backend.models.material import Material
 VALID_STATUSES = {"available", "claimed", "completed"}
 STATUS_TRANSITIONS = {
     "available": {"claimed", "completed"},
-    "claimed": {"available", "completed"},
+    "claimed": {"completed"},
     "completed": set(),
 }
 
@@ -24,6 +25,7 @@ class ListingStore:
     def __init__(self):
         self._lock = threading.RLock()
         self._listings: Dict[str, Listing] = {}
+        self._accept_route_results: Dict[str, Dict[str, object]] = {}
         self._seed_count = 0
         self._seed()
         self._seed_count = len(self._listings)
@@ -144,6 +146,7 @@ class ListingStore:
         """Restore deterministic demo seed inventory and statuses."""
         with self._lock:
             self._listings.clear()
+            self._accept_route_results.clear()
             self._seed()
 
     def reset_all(self):
@@ -184,3 +187,12 @@ class ListingStore:
             "seeded_listings": self._seed_count,
             "status_counts": counts,
         }
+
+    def get_accept_route_result(self, request_id: str) -> Dict[str, object] | None:
+        with self._lock:
+            value = self._accept_route_results.get(request_id)
+            return deepcopy(value) if value is not None else None
+
+    def save_accept_route_result(self, request_id: str, response: Dict[str, object]) -> None:
+        with self._lock:
+            self._accept_route_results[request_id] = deepcopy(response)

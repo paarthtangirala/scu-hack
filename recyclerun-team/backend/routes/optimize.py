@@ -82,7 +82,7 @@ def _request_id_from_context(payload: Dict | None) -> str:
 def optimize_route():
     data, errors = validate_optimize_payload(request.get_json(silent=True))
     if errors:
-        return error(code="validation_error", message="Invalid optimize payload", status=422, errors=errors)
+        return error(code="validation_error", message="Invalid optimize payload", status=400, errors=errors)
 
     stops, summary = optimizer.optimize(
         driver_lat=data["lat"],
@@ -99,9 +99,14 @@ def accept_route():
     raw_payload = request.get_json(silent=True)
     payload, errors = validate_accept_route_payload(raw_payload)
     if errors:
-        return error(code="validation_error", message="Invalid accept-route payload", status=422, errors=errors)
+        return error(code="validation_error", message="Invalid accept-route payload", status=400, errors=errors)
 
     request_id = _request_id_from_context(raw_payload)
+    replay = store.get_accept_route_result(request_id)
+    if replay is not None:
+        replay["idempotent_replay"] = True
+        return jsonify(replay)
+
     route_stops = payload["stops"]
     driver_name = payload["driver_name"]
     notifications = []
@@ -193,15 +198,16 @@ def accept_route():
         notifications_sent,
     )
 
-    return jsonify(
-        {
-            "success": True,
-            "request_id": request_id,
-            "driver_name": driver_name,
-            "requested_stops": len(route_stops),
-            "claimed_count": claimed_count,
-            "skipped_count": skipped_count,
-            "notifications_sent": notifications_sent,
-            "notifications": notifications,
-        }
-    )
+    response = {
+        "success": True,
+        "idempotent_replay": False,
+        "request_id": request_id,
+        "driver_name": driver_name,
+        "requested_stops": len(route_stops),
+        "claimed_count": claimed_count,
+        "skipped_count": skipped_count,
+        "notifications_sent": notifications_sent,
+        "notifications": notifications,
+    }
+    store.save_accept_route_result(request_id, response)
+    return jsonify(response)
