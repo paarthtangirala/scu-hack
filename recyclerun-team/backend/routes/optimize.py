@@ -84,14 +84,27 @@ def optimize_route():
     if errors:
         return error(code="validation_error", message="Invalid optimize payload", status=400, errors=errors)
 
-    stops, summary = optimizer.optimize(
-        driver_lat=data["lat"],
-        driver_lng=data["lng"],
-        listings=store.all("available"),
-        max_minutes=data["max_minutes"],
-        truck_capacity_lbs=data["truck_capacity_lbs"],
-        objective=data["objective"],
-    )
+    try:
+        stops, summary = optimizer.optimize(
+            driver_lat=data["lat"],
+            driver_lng=data["lng"],
+            listings=store.all("available"),
+            max_minutes=data["max_minutes"],
+            truck_capacity_lbs=data["truck_capacity_lbs"],
+            objective=data["objective"],
+        )
+    except Exception as exc:  # defensive guard: keep frontend-facing failure envelope structured
+        logger.exception(
+            "optimize-route failed objective=%s exception_type=%s",
+            data.get("objective"),
+            exc.__class__.__name__,
+        )
+        return error(
+            code="optimizer_failed",
+            message="Route optimizer failed to produce a route",
+            status=502,
+            errors=[{"field": "optimizer", "message": "Internal optimization failure"}],
+        )
     return jsonify({"stops": [s.to_dict() for s in stops], "summary": summary})
 
 @optimize_bp.post("/accept-route")
@@ -101,113 +114,126 @@ def accept_route():
     if errors:
         return error(code="validation_error", message="Invalid accept-route payload", status=400, errors=errors)
 
-    request_id = _request_id_from_context(raw_payload)
-    replay = store.get_accept_route_result(request_id)
-    if replay is not None:
-        replay["idempotent_replay"] = True
-        return jsonify(replay)
+    try:
+        request_id = _request_id_from_context(raw_payload)
+        replay = store.get_accept_route_result(request_id)
+        if replay is not None:
+            replay["idempotent_replay"] = True
+            return jsonify(replay)
 
-    route_stops = payload["stops"]
-    driver_name = payload["driver_name"]
-    notifications = []
-    processed_ids = set()
-    claimed_count = 0
-    skipped_count = 0
+        route_stops = payload["stops"]
+        driver_name = payload["driver_name"]
+        notifications = []
+        processed_ids = set()
+        claimed_count = 0
+        skipped_count = 0
 
-    for stop in route_stops:
-        lid = stop["listing_id"]
-        eta = stop["eta_minutes"]
+        for stop in route_stops:
+            lid = stop["listing_id"]
+            eta = stop["eta_minutes"]
 
-        if lid in processed_ids:
-            skipped_count += 1
-            notifications.append(
-                _build_stop_result(
-                    listing_id=lid,
-                    status_code="duplicate_stop",
-                    retryable=False,
-                    success=False,
-                    attempts=0,
-                    notification={"success": False, "mode": "skipped", "reason": "duplicate_stop"},
+            if lid in processed_ids:
+                skipped_count += 1
+                notifications.append(
+                    _build_stop_result(
+                        listing_id=lid,
+                        status_code="duplicate_stop",
+                        retryable=False,
+                        success=False,
+                        attempts=0,
+                        notification={"success": False, "mode": "skipped", "reason": "duplicate_stop"},
+                    )
                 )
-            )
-            continue
-        processed_ids.add(lid)
+                continue
+            processed_ids.add(lid)
 
-        listing = store.get(lid)
-        if not listing:
-            skipped_count += 1
-            notifications.append(
-                _build_stop_result(
-                    listing_id=lid,
-                    status_code="listing_not_found",
-                    retryable=False,
-                    success=False,
-                    attempts=0,
-                    notification={"success": False, "mode": "skipped", "reason": "not_found"},
+            listing = store.get(lid)
+            if not listing:
+                skipped_count += 1
+                notifications.append(
+                    _build_stop_result(
+                        listing_id=lid,
+                        status_code="listing_not_found",
+                        retryable=False,
+                        success=False,
+                        attempts=0,
+                        notification={"success": False, "mode": "skipped", "reason": "not_found"},
+                    )
                 )
-            )
-            continue
+                continue
 
-        claim_result = store.claim_listing(lid)
-        if claim_result != "claimed":
-            skipped_count += 1
+            claim_result = store.claim_listing(lid)
+            if claim_result != "claimed":
+                skipped_count += 1
+                notifications.append(
+                    _build_stop_result(
+                        listing_id=lid,
+                        status_code=claim_result,
+                        retryable=False,
+                        success=False,
+                        household=listing.household_name,
+                        phone=listing.phone,
+                        attempts=0,
+                        notification={"success": False, "mode": "skipped", "reason": claim_result},
+                    )
+                )
+                continue
+
+            claimed_count += 1
+            result, attempts_used = _notify_with_retry(
+                phone=listing.phone,
+                household_name=listing.household_name,
+                eta_minutes=eta,
+                driver_name=driver_name,
+                attempts=2,
+            )
+            status_code = "claimed_notified" if result.get("success") else "notification_failed"
             notifications.append(
                 _build_stop_result(
                     listing_id=lid,
-                    status_code=claim_result,
-                    retryable=False,
-                    success=False,
+                    status_code=status_code,
+                    retryable=not result.get("success", False),
+                    success=bool(result.get("success")),
                     household=listing.household_name,
                     phone=listing.phone,
-                    attempts=0,
-                    notification={"success": False, "mode": "skipped", "reason": claim_result},
+                    attempts=attempts_used,
+                    notification=result,
                 )
             )
-            continue
 
-        claimed_count += 1
-        result, attempts_used = _notify_with_retry(
-            phone=listing.phone,
-            household_name=listing.household_name,
-            eta_minutes=eta,
-            driver_name=driver_name,
-            attempts=2,
-        )
-        status_code = "claimed_notified" if result.get("success") else "notification_failed"
-        notifications.append(
-            _build_stop_result(
-                listing_id=lid,
-                status_code=status_code,
-                retryable=not result.get("success", False),
-                success=bool(result.get("success")),
-                household=listing.household_name,
-                phone=listing.phone,
-                attempts=attempts_used,
-                notification=result,
-            )
+        notifications_sent = len([n for n in notifications if n.get("notification", {}).get("success")])
+        logger.info(
+            "accept-route processed request_id=%s driver_name=%s requested_stops=%d claimed_count=%d skipped_count=%d notifications_sent=%d",
+            request_id,
+            driver_name,
+            len(route_stops),
+            claimed_count,
+            skipped_count,
+            notifications_sent,
         )
 
-    notifications_sent = len([n for n in notifications if n.get("notification", {}).get("success")])
-    logger.info(
-        "accept-route processed request_id=%s driver_name=%s requested_stops=%d claimed_count=%d skipped_count=%d notifications_sent=%d",
-        request_id,
-        driver_name,
-        len(route_stops),
-        claimed_count,
-        skipped_count,
-        notifications_sent,
-    )
-
-    response = {
-        "success": True,
-        "idempotent_replay": False,
-        "request_id": request_id,
-        "driver_name": driver_name,
-        "requested_stops": len(route_stops),
-        "claimed_count": claimed_count,
-        "skipped_count": skipped_count,
-        "notifications_sent": notifications_sent,
-        "notifications": notifications,
-    }
-    store.save_accept_route_result(request_id, response)
-    return jsonify(response)
+        response = {
+            "success": True,
+            "idempotent_replay": False,
+            "request_id": request_id,
+            "driver_name": driver_name,
+            "requested_stops": len(route_stops),
+            "claimed_count": claimed_count,
+            "skipped_count": skipped_count,
+            "notifications_sent": notifications_sent,
+            "notifications": notifications,
+        }
+        store.save_accept_route_result(request_id, response)
+        return jsonify(response)
+    except Exception as exc:  # defensive guard: prevent HTML 500 responses for clients
+        logger.exception(
+            "accept-route failed request_id_hint=%s exception_type=%s",
+            _request_id_from_context(raw_payload) if isinstance(raw_payload, dict) else "unknown",
+            exc.__class__.__name__,
+        )
+        return error(
+            code="accept_route_failed",
+            message="Failed to process accept-route request",
+            status=500,
+            errors=[{"field": "accept_route", "message": "Internal route processing failure"}],
+        )

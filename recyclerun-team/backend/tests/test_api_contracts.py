@@ -27,6 +27,17 @@ def _reset():
     store.reset_demo()
 
 
+def _assert_structured_error_envelope(body: dict):
+    assert body["success"] is False
+    assert isinstance(body.get("error"), str)
+    assert isinstance(body.get("code"), str)
+    assert isinstance(body.get("message"), str)
+    if "errors" in body:
+        assert isinstance(body["errors"], list)
+    if "details" in body:
+        assert isinstance(body["details"], list)
+
+
 def test_create_listing_requires_address():
     _reset()
     client = _client()
@@ -135,6 +146,87 @@ def test_optimize_rejects_invalid_objective():
     body = resp.get_json()
     assert body["code"] == "validation_error"
     assert any(e["field"] == "objective" for e in body["details"])
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_field"),
+    [
+        ({"json": []}, "body"),
+        ({"json": "not-an-object"}, "body"),
+        ({"json": 42}, "body"),
+        ({"data": "raw_text", "content_type": "text/plain"}, "body"),
+    ],
+)
+def test_optimize_non_object_body_returns_structured_validation_error(kwargs, expected_field):
+    client = _client()
+    resp = client.post("/api/optimize-route", **kwargs)
+    body = resp.get_json()
+
+    assert resp.status_code == 400
+    assert resp.status_code != 500
+    _assert_structured_error_envelope(body)
+    assert body["code"] == "validation_error"
+    assert any(d["field"] == expected_field for d in body.get("details", []))
+
+
+def test_optimize_malformed_types_and_ranges_returns_structured_details():
+    client = _client()
+    resp = client.post(
+        "/api/optimize-route",
+        json={
+            "lat": "north",
+            "lng": 999,
+            "max_minutes": 0,
+            "truck_capacity_lbs": "big",
+            "objective": "fastest",
+        },
+    )
+    body = resp.get_json()
+
+    assert resp.status_code == 400
+    assert resp.status_code != 500
+    _assert_structured_error_envelope(body)
+    assert body["code"] == "validation_error"
+    fields = {d["field"] for d in body.get("details", [])}
+    assert {"lat", "lng", "max_minutes", "truck_capacity_lbs", "objective"}.issubset(fields)
+
+
+@pytest.mark.parametrize(
+    "payload,expected_field",
+    [
+        ({"driver_name": "Driver", "stops": "invalid"}, "stops"),
+        ({"driver_name": "Driver", "stops": [{"eta_minutes": 15}]}, "stops[0].listing_id"),
+        ({"driver_name": "Driver", "stops": [{"listing_id": "abc", "eta_minutes": "soon"}]}, "stops[0].eta_minutes"),
+    ],
+)
+def test_accept_route_malformed_stops_payload_returns_structured_validation_error(payload, expected_field):
+    client = _client()
+    resp = client.post("/api/accept-route", json=payload)
+    body = resp.get_json()
+
+    assert resp.status_code == 400
+    assert resp.status_code != 500
+    _assert_structured_error_envelope(body)
+    assert body["code"] == "validation_error"
+    assert any(d["field"] == expected_field for d in body.get("details", []))
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "kwargs"),
+    [
+        ("/api/optimize-route", {"json": []}),
+        ("/api/optimize-route", {"json": {"lat": "bad", "lng": -121.9, "max_minutes": 60, "truck_capacity_lbs": 500, "objective": "value"}}),
+        ("/api/accept-route", {"json": {"driver_name": "D", "stops": [{"eta_minutes": 5}]}}),
+        ("/api/classify", {"json": {}}),
+    ],
+)
+def test_known_malformed_payloads_never_return_500(endpoint, kwargs):
+    client = _client()
+    resp = client.post(endpoint, **kwargs)
+    body = resp.get_json()
+
+    assert resp.status_code != 500
+    _assert_structured_error_envelope(body)
 
 
 def test_accept_route_is_idempotent_for_duplicate_and_claimed_stops():
