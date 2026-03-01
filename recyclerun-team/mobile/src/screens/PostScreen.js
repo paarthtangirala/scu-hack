@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { Card, PrimaryButton, SectionTitle, SecondaryButton, colors } from "../components/ui";
 import { API_BASE_URL, LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
@@ -940,7 +941,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
               style={styles.manualLbsInput}
             />
             <Pressable style={styles.binButton} onPress={() => removeManualRow(row.id)}>
-              <Text style={styles.binButtonText}>🗑</Text>
+              <MaterialCommunityIcons name="delete-outline" size={20} color={colors.danger} />
             </Pressable>
           </View>
         ))}
@@ -1323,10 +1324,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 107, 107, 0.12)",
     alignItems: "center",
     justifyContent: "center",
-  },
-  binButtonText: {
-    fontSize: 18,
-    color: colors.danger,
   },
   messageBar: {
     marginBottom: 10,

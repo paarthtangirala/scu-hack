@@ -5,10 +5,6 @@ import { api } from "../services/api";
 import { FALLBACK_MATERIALS } from "../services/materialsFallback";
 import { Card, colors } from "../components/ui";
 
-function shortSymbol(label) {
-  return String(label || "").trim().charAt(0).toUpperCase() || "M";
-}
-
 export function RatesScreen() {
   const [loading, setLoading] = useState(false);
   const [materials, setMaterials] = useState(FALLBACK_MATERIALS);
@@ -66,17 +62,10 @@ export function RatesScreen() {
           return (
             <Card key={key} style={styles.rateCard}>
               <View style={styles.rateLeft}>
-                <View style={styles.symbolWrap}>
-                  <Text style={styles.symbolText}>{shortSymbol(label)}</Text>
-                </View>
-                <View style={styles.rateMeta}>
-                  <Text style={styles.rateName}>{label}</Text>
-                  <Text style={styles.source}>SOURCE: CALRECYCLE 2025</Text>
-                </View>
+                <Text style={styles.rateName}>{label}</Text>
               </View>
               <View style={styles.rateRight}>
                 <Text style={styles.rateValue}>${rate.toFixed(2)}/lb</Text>
-                <Text style={styles.rateSmall}>10lb: ${(rate * 10).toFixed(2)}</Text>
               </View>
             </Card>
           );
@@ -166,57 +155,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   rateLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
     flex: 1,
     marginRight: 10,
   },
-  symbolWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.cardSoft,
-  },
-  symbolText: {
-    color: colors.ink,
-    fontSize: 28,
-    lineHeight: 30,
-    fontWeight: "800",
-  },
-  rateMeta: {
-    flex: 1,
-  },
   rateName: {
     color: colors.ink,
-    fontSize: 22,
-    lineHeight: 26,
+    fontSize: 19,
+    lineHeight: 24,
     fontWeight: "800",
-  },
-  source: {
-    marginTop: 4,
-    color: colors.muted,
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 1.2,
   },
   rateRight: {
     alignItems: "flex-end",
   },
   rateValue: {
     color: colors.primary,
-    fontSize: 27,
-    lineHeight: 30,
+    fontSize: 24,
+    lineHeight: 28,
     fontWeight: "800",
-  },
-  rateSmall: {
-    marginTop: 4,
-    color: colors.muted,
-    fontSize: 13,
-    fontWeight: "700",
   },
 });
