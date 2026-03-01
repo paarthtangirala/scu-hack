@@ -212,4 +212,32 @@ export const api = {
         stops,
       }),
     }),
+  startProfileSession: ({ role, displayName, email, phone, sessionId, deviceLabel }) =>
+    request("/profile/session", {
+      method: "POST",
+      body: JSON.stringify({
+        role,
+        display_name: displayName,
+        email,
+        phone,
+        session_id: sessionId,
+        device_label: deviceLabel,
+      }),
+    }),
+  getProfileSession: (sessionId) => request(`/profile/session/${encodeURIComponent(sessionId)}`),
+  endProfileSession: (sessionId) =>
+    request(`/profile/session/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
+  getProfile: (profileId) => request(`/profile/${encodeURIComponent(profileId)}`),
+  updateProfile: (profileId, payload) =>
+    request(`/profile/${encodeURIComponent(profileId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  completeOnboarding: (profileId) =>
+    request(`/profile/${encodeURIComponent(profileId)}/onboarding-complete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  getInstructionPackage: (role) =>
+    request(`/profile/instructions?role=${encodeURIComponent(role || "giver")}`),
 };

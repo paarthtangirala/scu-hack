@@ -16,16 +16,33 @@ const INPUT_PLACEHOLDER = "rgba(120, 145, 122, 0.8)";
 
 export function LoginScreen({ onLogin }) {
   const [role, setRole] = useState("User");
+  const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
 
-  const submit = () => {
-    if (!email.trim() || !phone.trim() || !password.trim()) {
+  const submit = async () => {
+    if (!displayName.trim() || !email.trim() || !phone.trim() || !password.trim()) {
+      setMessage("Name, email, phone, and password are required.");
       return;
     }
-    onLogin?.(role);
+    setLoading(true);
+    const response = await onLogin?.({
+      role: role === "Driver" ? "driver" : "giver",
+      display_name: displayName.trim(),
+      email: email.trim(),
+      phone: phone.trim(),
+      password,
+    });
+    setLoading(false);
+    if (!response?.ok) {
+      setMessage(response?.error || "Login failed. Please retry.");
+      return;
+    }
+    setMessage("");
   };
 
   return (
@@ -54,6 +71,20 @@ export function LoginScreen({ onLogin }) {
               </Pressable>
             );
           })}
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>DISPLAY NAME</Text>
+          <View style={styles.inputWrap}>
+            <MaterialCommunityIcons name="account-outline" size={22} color={colors.muted} />
+            <TextInput
+              value={displayName}
+              onChangeText={setDisplayName}
+              placeholder="Your name"
+              placeholderTextColor={INPUT_PLACEHOLDER}
+              style={styles.input}
+            />
+          </View>
         </View>
 
         <View style={styles.fieldGroup}>
@@ -109,7 +140,14 @@ export function LoginScreen({ onLogin }) {
           </View>
         </View>
 
-        <PrimaryButton title="Log In" onPress={submit} />
+        {message ? <Text style={styles.message}>{message}</Text> : null}
+
+        <PrimaryButton
+          title={loading ? "Signing In..." : "Log In"}
+          onPress={submit}
+          loading={loading}
+          disabled={loading}
+        />
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -215,5 +253,11 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontSize: 17,
     fontWeight: "500",
+  },
+  message: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 19,
   },
 });

@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { colors } from "./src/components/ui";
 import { api } from "./src/services/api";
@@ -8,8 +9,12 @@ import { DriverScreen } from "./src/screens/DriverScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { ImpactScreen } from "./src/screens/ImpactScreen";
 import { LoginScreen } from "./src/screens/LoginScreen";
+import { OnboardingScreen } from "./src/screens/OnboardingScreen";
 import { PostScreen } from "./src/screens/PostScreen";
+import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { RatesScreen } from "./src/screens/RatesScreen";
+
+const SESSION_STORAGE_KEY = "bin2bucks.session_id";
 
 const TABS = [
   { key: "home", label: "HOME", icon: "home-outline", iconActive: "home" },
@@ -17,30 +22,72 @@ const TABS = [
   { key: "driver", label: "DRIVE", icon: "truck-outline", iconActive: "truck" },
   { key: "impact", label: "IMPACT", icon: "chart-bar-stacked", iconActive: "chart-bar-stacked" },
   { key: "rates", label: "RATES", icon: "currency-usd", iconActive: "currency-usd" },
+  { key: "profile", label: "PROFILE", icon: "account-circle-outline", iconActive: "account-circle" },
 ];
+
+function deviceLabel() {
+  const os = Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
+  return `${os}-expo`;
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("home");
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [apiHealthy, setApiHealthy] = useState(true);
   const [apiChecked, setApiChecked] = useState(false);
+  const [booting, setBooting] = useState(true);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [instructionPackage, setInstructionPackage] = useState(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [savingOnboarding, setSavingOnboarding] = useState(false);
   const BRAND_NAME = "Bin2Bucks";
 
-  const Screen = useMemo(() => {
-    switch (activeTab) {
-      case "post":
-        return PostScreen;
-      case "driver":
-        return DriverScreen;
-      case "impact":
-        return ImpactScreen;
-      case "rates":
-        return RatesScreen;
-      case "home":
-      default:
-        return HomeScreen;
-    }
-  }, [activeTab]);
+  const isAuthenticated = Boolean(session?.session_id && profile?.id);
+
+  const applySessionState = useCallback((payload) => {
+    const nextSession = payload?.session || null;
+    const nextProfile = payload?.profile || null;
+    setSession(nextSession);
+    setProfile(nextProfile);
+    setInstructionPackage(payload?.instruction_package || null);
+    setShowOnboarding(Boolean(payload?.onboarding_required));
+  }, []);
+
+  const clearSessionState = useCallback(async () => {
+    setSession(null);
+    setProfile(null);
+    setInstructionPackage(null);
+    setShowOnboarding(false);
+    setApiChecked(false);
+    setApiHealthy(true);
+    setActiveTab("home");
+    await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const savedSessionId = await AsyncStorage.getItem(SESSION_STORAGE_KEY);
+      if (!mounted) return;
+      if (!savedSessionId) {
+        setBooting(false);
+        return;
+      }
+
+      const response = await api.getProfileSession(savedSessionId);
+      if (!mounted) return;
+      if (!response.ok) {
+        await clearSessionState();
+        setBooting(false);
+        return;
+      }
+      applySessionState(response.data);
+      setBooting(false);
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [applySessionState, clearSessionState]);
 
   useEffect(() => {
     let mounted = true;
@@ -65,13 +112,116 @@ export default function App() {
     };
   }, [isAuthenticated]);
 
+  const handleLogin = useCallback(
+    async ({ role, display_name, email, phone }) => {
+      const response = await api.startProfileSession({
+        role,
+        displayName: display_name,
+        email,
+        phone,
+        deviceLabel: deviceLabel(),
+      });
+      if (!response.ok) {
+        return { ok: false, error: response.error || response.hint || "Could not start session" };
+      }
+
+      applySessionState(response.data);
+      await AsyncStorage.setItem(SESSION_STORAGE_KEY, response.data.session.session_id);
+      setActiveTab(role === "driver" ? "driver" : "home");
+      return { ok: true };
+    },
+    [applySessionState],
+  );
+
+  const handleLogout = useCallback(async () => {
+    if (session?.session_id) {
+      await api.endProfileSession(session.session_id);
+    }
+    await clearSessionState();
+  }, [clearSessionState, session?.session_id]);
+
+  const refreshProfile = useCallback(async () => {
+    if (!profile?.id) return { ok: false, error: "Profile not loaded" };
+    const response = await api.getProfile(profile.id);
+    if (!response.ok) {
+      return { ok: false, error: response.error || response.hint || "Could not refresh profile" };
+    }
+    setProfile(response.data.profile);
+    setInstructionPackage(response.data.instruction_package || null);
+    return { ok: true };
+  }, [profile?.id]);
+
+  const saveProfile = useCallback(
+    async ({ display_name, email, phone }) => {
+      if (!profile?.id) return { ok: false, error: "Profile not loaded" };
+      const response = await api.updateProfile(profile.id, {
+        display_name,
+        email,
+        phone,
+      });
+      if (!response.ok) {
+        return { ok: false, error: response.error || response.hint || "Could not save profile" };
+      }
+      setProfile(response.data.profile);
+      return { ok: true };
+    },
+    [profile?.id],
+  );
+
+  const completeOnboarding = useCallback(async () => {
+    if (!profile?.id) return;
+    setSavingOnboarding(true);
+    const response = await api.completeOnboarding(profile.id);
+    setSavingOnboarding(false);
+    if (!response.ok) {
+      return;
+    }
+    setProfile(response.data.profile);
+    setInstructionPackage(response.data.instruction_package || null);
+    setShowOnboarding(false);
+  }, [profile?.id]);
+
+  const renderScreen = () => {
+    if (activeTab === "home") {
+      return <HomeScreen onNavigate={setActiveTab} />;
+    }
+    if (activeTab === "post") return <PostScreen />;
+    if (activeTab === "driver") return <DriverScreen />;
+    if (activeTab === "impact") return <ImpactScreen />;
+    if (activeTab === "rates") return <RatesScreen />;
+    return (
+      <ProfileScreen
+        profile={profile}
+        session={session}
+        instructionPackage={instructionPackage}
+        onNavigate={setActiveTab}
+        onRefresh={refreshProfile}
+        onSaveProfile={saveProfile}
+        onReplayGuide={() => setShowOnboarding(true)}
+        onLogout={handleLogout}
+      />
+    );
+  };
+
+  if (booting) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar style="light" />
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading session...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (!isAuthenticated) {
     return (
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
         <View style={styles.bgGlowA} />
         <View style={styles.bgGlowB} />
-        <LoginScreen onLogin={() => setIsAuthenticated(true)} />
+        <LoginScreen onLogin={handleLogin} />
       </SafeAreaView>
     );
   }
@@ -86,12 +236,15 @@ export default function App() {
           <View style={styles.brandIconWrap}>
             <Text style={styles.brandIcon}>♻️</Text>
           </View>
-          <Text style={styles.logo}>{BRAND_NAME}</Text>
+          <View>
+            <Text style={styles.logo}>{BRAND_NAME}</Text>
+            <Text style={styles.identityText}>{profile?.display_name || "Member"} • {profile?.role || "giver"}</Text>
+          </View>
         </View>
-        <View style={styles.liveBadge}>
+        <Pressable style={styles.liveBadge} onPress={() => setActiveTab("profile")}>
           <View style={styles.liveDot} />
-          <Text style={styles.liveText}>LIVE</Text>
-        </View>
+          <Text style={styles.liveText}>PROFILE</Text>
+        </Pressable>
       </View>
 
       {apiChecked && !apiHealthy ? (
@@ -101,9 +254,7 @@ export default function App() {
         </View>
       ) : null}
 
-      <View style={styles.body}>
-        {activeTab === "home" ? <HomeScreen onNavigate={setActiveTab} /> : <Screen />}
-      </View>
+      <View style={styles.body}>{renderScreen()}</View>
 
       <View style={styles.tabBar}>
         {TABS.map((tab) => {
@@ -117,7 +268,7 @@ export default function App() {
               <View style={[styles.tabIconWrap, active ? styles.tabIconWrapActive : null]}>
                 <MaterialCommunityIcons
                   name={active ? tab.iconActive : tab.icon}
-                  size={24}
+                  size={22}
                   color={active ? colors.primary : colors.muted}
                 />
               </View>
@@ -126,6 +277,14 @@ export default function App() {
           );
         })}
       </View>
+
+      <OnboardingScreen
+        visible={showOnboarding}
+        instructionPackage={instructionPackage}
+        onComplete={completeOnboarding}
+        onSkip={() => setShowOnboarding(false)}
+        loading={savingOnboarding}
+      />
     </SafeAreaView>
   );
 }
@@ -134,6 +293,18 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  loadingWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+  },
+  loadingText: {
+    color: colors.muted,
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 1,
   },
   bgGlowA: {
     position: "absolute",
@@ -183,10 +354,15 @@ const styles = StyleSheet.create({
     fontSize: 22,
   },
   logo: {
-    fontSize: 22,
-    lineHeight: 24,
+    fontSize: 20,
+    lineHeight: 23,
     fontWeight: "800",
     color: colors.ink,
+  },
+  identityText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "700",
   },
   body: {
     flex: 1,
@@ -199,20 +375,20 @@ const styles = StyleSheet.create({
     borderColor: "rgba(0, 232, 122, 0.35)",
     backgroundColor: "rgba(0, 232, 122, 0.12)",
     borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
   },
   liveDot: {
-    width: 12,
-    height: 12,
+    width: 10,
+    height: 10,
     borderRadius: 999,
     backgroundColor: colors.primary,
   },
   liveText: {
     color: colors.primary,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: "800",
-    letterSpacing: 2,
+    letterSpacing: 1.5,
   },
   offlineBar: {
     backgroundColor: "rgba(245, 166, 35, 0.12)",
@@ -239,7 +415,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(7, 16, 11, 0.92)",
     paddingTop: 8,
     paddingBottom: 12,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
   },
   tabButton: {
     flex: 1,
@@ -252,28 +428,28 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   tabIconWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 15,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 6,
   },
   tabIconWrapActive: {
-    backgroundColor: "rgba(0, 232, 122, 0.16)",
+    backgroundColor: "rgba(0, 232, 122, 0.14)",
     borderWidth: 1,
-    borderColor: "rgba(0, 232, 122, 0.35)",
+    borderColor: "rgba(0, 232, 122, 0.3)",
   },
   tabText: {
-    fontSize: 10,
     color: colors.muted,
-    fontWeight: "800",
-    letterSpacing: 1.4,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1.8,
   },
   tabTextActive: {
-    fontSize: 10,
     color: colors.primary,
+    fontSize: 10,
     fontWeight: "800",
-    letterSpacing: 1.4,
+    letterSpacing: 1.8,
   },
 });

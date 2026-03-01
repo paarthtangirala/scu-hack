@@ -8,18 +8,69 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List
 
 from backend.models.listing import Listing
 from backend.models.material import Material
 
 
 VALID_STATUSES = {"available", "claimed", "completed"}
+PROFILE_ROLES = {"giver", "driver"}
 STATUS_TRANSITIONS = {
     "available": {"claimed", "completed"},
     "claimed": {"completed"},
     "completed": set(),
+}
+
+DEFAULT_PROFILE_ACTIONS: Dict[str, List[Dict[str, str]]] = {
+    "giver": [
+        {
+            "id": "post_listing",
+            "label": "Post Listing",
+            "target_tab": "post",
+            "icon": "hand-heart",
+            "description": "Create a recyclable pickup listing quickly.",
+        },
+        {
+            "id": "check_rates",
+            "label": "Check Rates",
+            "target_tab": "rates",
+            "icon": "currency-usd",
+            "description": "Review current payout rates by material.",
+        },
+        {
+            "id": "view_impact",
+            "label": "See Impact",
+            "target_tab": "impact",
+            "icon": "chart-bar-stacked",
+            "description": "Track your recycling contribution.",
+        },
+    ],
+    "driver": [
+        {
+            "id": "build_route",
+            "label": "Build Route",
+            "target_tab": "driver",
+            "icon": "truck-fast",
+            "description": "Build the highest-value route for your shift.",
+        },
+        {
+            "id": "collect_now",
+            "label": "Driver Dashboard",
+            "target_tab": "driver",
+            "icon": "map-marker-path",
+            "description": "Accept route and start turn-by-turn workflow.",
+        },
+        {
+            "id": "track_impact",
+            "label": "Track Impact",
+            "target_tab": "impact",
+            "icon": "leaf",
+            "description": "Watch lbs diverted and earnings in real time.",
+        },
+    ],
 }
 
 
@@ -115,9 +166,117 @@ class ListingStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    email TEXT,
+                    phone TEXT,
+                    onboarding_completed INTEGER NOT NULL DEFAULT 0,
+                    quick_actions_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    CHECK (role IN ('giver', 'driver')),
+                    UNIQUE(role, email),
+                    UNIQUE(role, phone)
+                )
+                """
+            )
+            self._migrate_user_profiles_if_needed(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    device_label TEXT NOT NULL DEFAULT 'mobile',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    last_active_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    CHECK (role IN ('giver', 'driver')),
+                    FOREIGN KEY(profile_id) REFERENCES user_profiles(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_sessions_profile_id ON user_sessions(profile_id)"
+            )
             current_total = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
             if current_total == 0:
                 self._seed_into_connection(conn)
+
+    def _migrate_user_profiles_if_needed(self, conn: sqlite3.Connection) -> None:
+        columns = conn.execute("PRAGMA table_info(user_profiles)").fetchall()
+        if not columns:
+            return
+
+        by_name = {row["name"]: row for row in columns}
+        email_col = by_name.get("email")
+        phone_col = by_name.get("phone")
+        if email_col is None or phone_col is None:
+            return
+
+        # Legacy schema stored empty-string contact fields as NOT NULL values,
+        # which breaks profile uniqueness across sessions.
+        requires_migration = bool(email_col["notnull"]) or bool(phone_col["notnull"])
+        if not requires_migration:
+            return
+
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_profiles_migrated (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    email TEXT,
+                    phone TEXT,
+                    onboarding_completed INTEGER NOT NULL DEFAULT 0,
+                    quick_actions_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    CHECK (role IN ('giver', 'driver')),
+                    UNIQUE(role, email),
+                    UNIQUE(role, phone)
+                )
+                """
+            )
+            conn.execute("DELETE FROM user_profiles_migrated")
+            conn.execute(
+                """
+                INSERT INTO user_profiles_migrated (
+                    id, role, display_name, email, phone,
+                    onboarding_completed, quick_actions_json, created_at, updated_at
+                )
+                SELECT
+                    id,
+                    CASE
+                        WHEN lower(trim(coalesce(role, ''))) IN ('giver', 'driver')
+                            THEN lower(trim(role))
+                        ELSE 'giver'
+                    END AS role,
+                    CASE
+                        WHEN trim(coalesce(display_name, '')) <> ''
+                            THEN trim(display_name)
+                        WHEN lower(trim(coalesce(role, ''))) = 'driver'
+                            THEN 'Driver'
+                        ELSE 'Giver'
+                    END AS display_name,
+                    NULLIF(trim(coalesce(email, '')), '') AS email,
+                    NULLIF(trim(coalesce(phone, '')), '') AS phone,
+                    CASE WHEN coalesce(onboarding_completed, 0) = 1 THEN 1 ELSE 0 END AS onboarding_completed,
+                    coalesce(NULLIF(quick_actions_json, ''), '[]') AS quick_actions_json,
+                    coalesce(created_at, datetime('now')) AS created_at,
+                    coalesce(updated_at, datetime('now')) AS updated_at
+                FROM user_profiles
+                """
+            )
+            conn.execute("DROP TABLE user_profiles")
+            conn.execute("ALTER TABLE user_profiles_migrated RENAME TO user_profiles")
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
 
     def _seed_into_connection(self, conn: sqlite3.Connection) -> None:
         for item in SEED_DATA:
@@ -197,6 +356,97 @@ class ListingStore:
         listing.posted_at = row["posted_at"]
         listing.photo_url = row["photo_url"]
         return listing
+
+    @staticmethod
+    def _normalize_role(role: str) -> str:
+        normalized = str(role or "").strip().lower()
+        aliases = {"user": "giver", "household": "giver", "collector": "driver"}
+        return aliases.get(normalized, normalized)
+
+    @staticmethod
+    def _normalize_email(email: str) -> str:
+        return str(email or "").strip().lower()
+
+    @staticmethod
+    def _normalize_phone(phone: str) -> str:
+        return str(phone or "").strip()
+
+    @staticmethod
+    def _safe_display_name(display_name: str, role: str) -> str:
+        value = str(display_name or "").strip()
+        if value:
+            return value
+        return "Giver" if role == "giver" else "Driver"
+
+    @staticmethod
+    def _profile_actions_for_role(role: str) -> List[Dict[str, str]]:
+        actions = DEFAULT_PROFILE_ACTIONS.get(role) or DEFAULT_PROFILE_ACTIONS["giver"]
+        return [dict(item) for item in actions]
+
+    def _row_to_profile(self, row: sqlite3.Row) -> Dict[str, Any]:
+        quick_actions_raw = row["quick_actions_json"] or "[]"
+        try:
+            quick_actions = json.loads(quick_actions_raw)
+            if not isinstance(quick_actions, list):
+                quick_actions = self._profile_actions_for_role(row["role"])
+        except json.JSONDecodeError:
+            quick_actions = self._profile_actions_for_role(row["role"])
+        return {
+            "id": row["id"],
+            "role": row["role"],
+            "display_name": row["display_name"],
+            "email": row["email"] or "",
+            "phone": row["phone"] or "",
+            "onboarding_completed": bool(row["onboarding_completed"]),
+            "quick_actions": quick_actions,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_session_at": row["last_session_at"],
+        }
+
+    def _get_profile_row(self, conn: sqlite3.Connection, profile_id: str) -> sqlite3.Row | None:
+        return conn.execute(
+            """
+            SELECT
+                p.*,
+                (
+                    SELECT MAX(s.last_active_at)
+                    FROM user_sessions s
+                    WHERE s.profile_id = p.id
+                ) AS last_session_at
+            FROM user_profiles p
+            WHERE p.id = ?
+            """,
+            (profile_id,),
+        ).fetchone()
+
+    def _get_session_bundle(
+        self, conn: sqlite3.Connection, session_id: str
+    ) -> Dict[str, Any] | None:
+        row = conn.execute(
+            """
+            SELECT session_id, profile_id, role, device_label, created_at, last_active_at
+            FROM user_sessions
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        profile_row = self._get_profile_row(conn, row["profile_id"])
+        if profile_row is None:
+            return None
+
+        session_payload = {
+            "session_id": row["session_id"],
+            "profile_id": row["profile_id"],
+            "role": row["role"],
+            "device_label": row["device_label"],
+            "created_at": row["created_at"],
+            "last_active_at": row["last_active_at"],
+        }
+        return {"session": session_payload, "profile": self._row_to_profile(profile_row)}
 
     def all(self, status: str = "available") -> List[Listing]:
         normalized_status = (status or "available").strip().lower()
@@ -311,6 +561,220 @@ class ListingStore:
             "seeded_listings": self._seed_count,
             "status_counts": counts,
         }
+
+    def create_or_update_profile(
+        self,
+        *,
+        role: str,
+        display_name: str,
+        email: str,
+        phone: str,
+    ) -> Dict[str, Any]:
+        normalized_role = self._normalize_role(role)
+        if normalized_role not in PROFILE_ROLES:
+            raise ValueError(f"Unsupported role '{role}'")
+
+        normalized_email = self._normalize_email(email)
+        normalized_phone = self._normalize_phone(phone)
+        if not normalized_email and not normalized_phone:
+            raise ValueError("Either email or phone is required")
+
+        safe_name = self._safe_display_name(display_name, normalized_role)
+
+        with self._lock, self._connect() as conn:
+            existing_row = None
+            if normalized_email:
+                existing_row = conn.execute(
+                    "SELECT id FROM user_profiles WHERE role = ? AND email = ?",
+                    (normalized_role, normalized_email),
+                ).fetchone()
+            if existing_row is None and normalized_phone:
+                existing_row = conn.execute(
+                    "SELECT id FROM user_profiles WHERE role = ? AND phone = ?",
+                    (normalized_role, normalized_phone),
+                ).fetchone()
+
+            if existing_row is None:
+                profile_id = f"profile_{uuid.uuid4().hex[:12]}"
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO user_profiles (
+                            id, role, display_name, email, phone, onboarding_completed, quick_actions_json
+                        ) VALUES (?, ?, ?, ?, ?, 0, ?)
+                        """,
+                        (
+                            profile_id,
+                            normalized_role,
+                            safe_name,
+                            normalized_email or None,
+                            normalized_phone or None,
+                            json.dumps(
+                                self._profile_actions_for_role(normalized_role),
+                                separators=(",", ":"),
+                            ),
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError("Profile already exists for this role and contact") from exc
+            else:
+                profile_id = existing_row["id"]
+                row = conn.execute(
+                    "SELECT display_name, email, phone, quick_actions_json FROM user_profiles WHERE id = ?",
+                    (profile_id,),
+                ).fetchone()
+                next_name = safe_name or row["display_name"]
+                next_email = normalized_email or (row["email"] or None)
+                next_phone = normalized_phone or (row["phone"] or None)
+                next_quick_actions = row["quick_actions_json"] or json.dumps(
+                    self._profile_actions_for_role(normalized_role),
+                    separators=(",", ":"),
+                )
+                try:
+                    conn.execute(
+                        """
+                        UPDATE user_profiles
+                        SET display_name = ?, email = ?, phone = ?, quick_actions_json = ?, updated_at = datetime('now')
+                        WHERE id = ?
+                        """,
+                        (next_name, next_email, next_phone, next_quick_actions, profile_id),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError("Another profile already uses this role/contact") from exc
+
+            profile_row = self._get_profile_row(conn, profile_id)
+            if profile_row is None:
+                raise ValueError("Profile lookup failed after create/update")
+            return self._row_to_profile(profile_row)
+
+    def get_profile(self, profile_id: str) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = self._get_profile_row(conn, profile_id)
+            if row is None:
+                return None
+            return self._row_to_profile(row)
+
+    def update_profile(
+        self,
+        profile_id: str,
+        *,
+        display_name: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+    ) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            current = conn.execute(
+                "SELECT id, role, display_name, email, phone FROM user_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+            if current is None:
+                return None
+
+            next_name = current["display_name"] if display_name is None else self._safe_display_name(display_name, current["role"])
+            next_email = current["email"] if email is None else (self._normalize_email(email) or None)
+            next_phone = current["phone"] if phone is None else (self._normalize_phone(phone) or None)
+            if not next_email and not next_phone:
+                raise ValueError("Either email or phone must remain set")
+
+            try:
+                conn.execute(
+                    """
+                    UPDATE user_profiles
+                    SET display_name = ?, email = ?, phone = ?, updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (next_name, next_email, next_phone, profile_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Another profile already uses this role/contact") from exc
+
+            row = self._get_profile_row(conn, profile_id)
+            if row is None:
+                return None
+            return self._row_to_profile(row)
+
+    def mark_onboarding_complete(self, profile_id: str) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE user_profiles
+                SET onboarding_completed = 1, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (profile_id,),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = self._get_profile_row(conn, profile_id)
+            if row is None:
+                return None
+            return self._row_to_profile(row)
+
+    def create_session(
+        self,
+        *,
+        profile_id: str,
+        role: str,
+        device_label: str = "mobile",
+        session_id: str | None = None,
+    ) -> Dict[str, Any]:
+        normalized_role = self._normalize_role(role)
+        if normalized_role not in PROFILE_ROLES:
+            raise ValueError(f"Unsupported role '{role}'")
+
+        safe_device_label = str(device_label or "mobile").strip()[:80] or "mobile"
+        safe_session_id = str(session_id or "").strip()
+        if not safe_session_id:
+            safe_session_id = f"sess_{uuid.uuid4().hex[:14]}"
+
+        with self._lock, self._connect() as conn:
+            profile_row = conn.execute(
+                "SELECT id FROM user_profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+            if profile_row is None:
+                raise ValueError("Profile does not exist")
+
+            conn.execute(
+                """
+                INSERT INTO user_sessions (session_id, profile_id, role, device_label)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    profile_id = excluded.profile_id,
+                    role = excluded.role,
+                    device_label = excluded.device_label,
+                    last_active_at = datetime('now')
+                """,
+                (safe_session_id, profile_id, normalized_role, safe_device_label),
+            )
+            conn.execute(
+                "UPDATE user_profiles SET updated_at = datetime('now') WHERE id = ?",
+                (profile_id,),
+            )
+            bundle = self._get_session_bundle(conn, safe_session_id)
+            if bundle is None:
+                raise ValueError("Session lookup failed after create")
+            return bundle
+
+    def touch_session(self, session_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE user_sessions SET last_active_at = datetime('now') WHERE session_id = ?",
+                (session_id,),
+            )
+            return cursor.rowcount > 0
+
+    def get_session(self, session_id: str) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            return self._get_session_bundle(conn, session_id)
+
+    def end_session(self, session_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+            return cursor.rowcount > 0
 
     def get_accept_route_result(self, request_id: str) -> Dict[str, object] | None:
         with self._lock, self._connect() as conn:

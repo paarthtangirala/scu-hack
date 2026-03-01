@@ -12,6 +12,7 @@ from backend.models.material import MATERIAL_RATES, Material
 
 LISTING_KINDS = {"household", "business"}
 OBJECTIVES = {"value", "profit", "earnings", "$", "lbs", "weight", "impact", "diversion"}
+PROFILE_ROLES = {"giver", "driver"}
 
 
 def _as_string(value: Any) -> str:
@@ -212,6 +213,96 @@ def validate_accept_route_payload(data: Any) -> Tuple[Dict[str, Any] | None, Lis
         return None, errors
 
     return {"driver_name": driver_name, "stops": stops}, []
+
+
+def _normalize_profile_role(value: Any) -> str:
+    role = _as_string(value).lower()
+    aliases = {"user": "giver", "household": "giver", "collector": "driver"}
+    return aliases.get(role, role)
+
+
+def validate_profile_role(value: Any) -> Tuple[str, List[Dict[str, str]]]:
+    role = _normalize_profile_role(value)
+    if role not in PROFILE_ROLES:
+        return "", [{"field": "role", "message": f"Must be one of: {', '.join(sorted(PROFILE_ROLES))}"}]
+    return role, []
+
+
+def validate_profile_session_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dict[str, str]]]:
+    errors: List[Dict[str, str]] = []
+    if not isinstance(data, dict):
+        return None, [{"field": "body", "message": "JSON object is required"}]
+
+    role, role_errors = validate_profile_role(data.get("role"))
+    if role_errors:
+        errors.extend(role_errors)
+
+    display_name = _as_string(data.get("display_name") or data.get("name"))
+    email = _as_string(data.get("email")).lower()
+    phone = _as_string(data.get("phone"))
+    if not email and not phone:
+        errors.append({"field": "email", "message": "Either email or phone is required"})
+
+    if not display_name:
+        if email:
+            display_name = email.split("@", 1)[0].replace(".", " ").replace("_", " ").title()
+        elif phone:
+            display_name = f"{role.title()} User" if role else "Bin2Bucks User"
+        else:
+            errors.append({"field": "display_name", "message": "display_name is required"})
+
+    session_id = _as_string(data.get("session_id"))
+    if session_id:
+        safe_session_id = "".join(ch for ch in session_id if ch.isalnum() or ch in {"-", "_", "."})
+        if not safe_session_id:
+            errors.append({"field": "session_id", "message": "session_id contains invalid characters"})
+        session_id = safe_session_id[:80]
+
+    device_label = _as_string(data.get("device_label")) or "mobile-app"
+    device_label = device_label[:80]
+
+    if errors:
+        return None, errors
+
+    return {
+        "role": role,
+        "display_name": display_name[:80],
+        "email": email,
+        "phone": phone,
+        "session_id": session_id,
+        "device_label": device_label,
+    }, []
+
+
+def validate_profile_update_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dict[str, str]]]:
+    errors: List[Dict[str, str]] = []
+    if not isinstance(data, dict):
+        return None, [{"field": "body", "message": "JSON object is required"}]
+
+    payload: Dict[str, Any] = {}
+    if "display_name" in data:
+        name = _as_string(data.get("display_name"))
+        if not name:
+            errors.append({"field": "display_name", "message": "display_name must be non-empty"})
+        else:
+            payload["display_name"] = name[:80]
+
+    if "email" in data:
+        payload["email"] = _as_string(data.get("email")).lower()
+
+    if "phone" in data:
+        payload["phone"] = _as_string(data.get("phone"))
+
+    if not payload:
+        errors.append({"field": "body", "message": "At least one field is required: display_name, email, phone"})
+
+    if "email" in payload and "phone" in payload and not payload["email"] and not payload["phone"]:
+        errors.append({"field": "email", "message": "Either email or phone must be provided"})
+
+    if errors:
+        return None, errors
+
+    return payload, []
 
 
 def validate_live_session_start_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dict[str, str]]]:
