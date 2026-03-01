@@ -93,6 +93,8 @@ def test_create_listing_preserves_valid_material_payload_unchanged():
     listing = resp.get_json()["listing"]
     assert [m["type"] for m in listing["materials"]] == ["cardboard", "cardboard", "aluminum_cans"]
     assert [m["lbs"] for m in listing["materials"]] == [1.25, 2.75, 2.0]
+    assert "geocode" in listing
+    assert listing["geocode"]["success"] is False
 
 
 def test_get_listings_rejects_invalid_status():

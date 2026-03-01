@@ -17,13 +17,6 @@ import { API_BASE_URL, LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
 import { api } from "../services/api";
 import { FALLBACK_MATERIALS } from "../services/materialsFallback";
 
-function randomLatLng() {
-  return {
-    lat: 37.3541 + (Math.random() - 0.5) * 0.05,
-    lng: -121.9552 + (Math.random() - 0.5) * 0.05,
-  };
-}
-
 function formatApiFailure(action, response) {
   const hint = response?.hint ? ` ${response.hint}` : "";
   return `${action} failed: ${response?.error || "Request failed"}${hint}`;
@@ -653,13 +646,10 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     }
 
     setLoadingSubmit(true);
-    const { lat, lng } = randomLatLng();
     const response = await api.createListing({
       ...form,
       household_name: effectiveName,
       phone: effectivePhone,
-      lat,
-      lng,
       materials: merged,
     });
     setLoadingSubmit(false);
@@ -669,7 +659,12 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       return;
     }
 
-    setMessage("Listing posted successfully");
+    const geocode = response?.data?.listing?.geocode || {};
+    if (geocode?.success) {
+      setMessage(`Listing posted successfully (pinpointed via ${geocode.provider || "geocoder"})`);
+    } else {
+      setMessage("Listing posted successfully (using fallback coordinates)");
+    }
     onListingPosted(response?.data?.listing?.id || "");
     setForm((prev) => ({
       listing_kind: prev.listing_kind,
