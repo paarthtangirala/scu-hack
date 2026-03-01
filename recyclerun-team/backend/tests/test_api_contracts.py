@@ -8,6 +8,7 @@ from flask import Flask
 import pytest
 
 from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
+import backend.routes.classify as classify_module
 import backend.routes.optimize as optimize_module
 from backend.services.store import store
 
@@ -97,6 +98,24 @@ def test_classify_rejects_invalid_base64():
     body = resp.get_json()
     assert body["code"] == "validation_error"
     assert any(e["field"] == "image_base64" for e in body["details"])
+
+
+def test_classify_malformed_amd_output_falls_back_to_demo(monkeypatch):
+    client = _client()
+    monkeypatch.delenv("ENABLE_CLAUDE_FALLBACK", raising=False)
+    monkeypatch.setattr(
+        classify_module.classifier,
+        "_try_amd",
+        lambda b64: classify_module.classifier._parse("model said hello {bad json}", source="amd"),
+    )
+
+    resp = client.post("/api/classify", json={"image_base64": "aGVsbG8="})
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    assert body["source"] == "demo"
+    assert isinstance(body["materials"], list)
 
 
 def test_optimize_rejects_invalid_objective():
