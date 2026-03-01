@@ -52,8 +52,11 @@ export function PostScreen() {
   const [aiSource, setAiSource] = useState("");
   const [liveSession, setLiveSession] = useState(null);
   const [liveRunning, setLiveRunning] = useState(false);
+  const [startingLive, setStartingLive] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
+  const liveSessionIdRef = useRef("");
   const frameLoopRef = useRef(null);
   const frameBusyRef = useRef(false);
 
@@ -62,6 +65,12 @@ export function PostScreen() {
   useEffect(() => {
     lockedTypesRef.current = lockedTypes;
   }, [lockedTypes]);
+
+  useEffect(() => {
+    if (!cameraPermission?.granted) {
+      setCameraReady(false);
+    }
+  }, [cameraPermission?.granted]);
 
   const loadMaterials = useCallback(async () => {
     const response = await api.getMaterials();
@@ -213,11 +222,14 @@ export function PostScreen() {
   const stopLivePreview = useCallback(async () => {
     clearLiveFrameLoop();
     setLiveRunning(false);
+    setStartingLive(false);
     frameBusyRef.current = false;
-    if (!liveSession?.session_id) return;
-    await api.stopLiveVisionSession(liveSession.session_id);
+    const sessionId = liveSessionIdRef.current;
+    liveSessionIdRef.current = "";
     setLiveSession(null);
-  }, [clearLiveFrameLoop, liveSession]);
+    if (!sessionId) return;
+    await api.stopLiveVisionSession(sessionId);
+  }, [clearLiveFrameLoop]);
 
   const sendLiveFrame = useCallback(
     async (sessionId) => {
@@ -235,25 +247,55 @@ export function PostScreen() {
           mime_type: "image/jpeg",
         });
         if (!response.ok) {
+          if (response.status === 404) {
+            setLiveSupported(false);
+            setCaptureMode("photo");
+            setMessage(
+              `Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`,
+            );
+            return;
+          }
           setMessage(formatApiFailure("Live preview", response));
           return;
         }
         setAiSource(response.data?.source || "gemini_live");
         setAiMaterials(normalizeAiRows(response.data?.materials || []));
-        setMessage(response.data?.source === "gemini_live_demo"
-          ? "Live AI fallback mode active. You can still add/edit materials manually."
-          : "Live AI preview active.");
+        if (response.data?.source === "gemini_live_demo") {
+          const fallbackReason = String(response.data?.notes || "")
+            .replace(/^Live fallback:\s*/i, "")
+            .trim();
+          const detail = fallbackReason ? ` (${fallbackReason})` : "";
+          setMessage(`Live AI fallback mode active${detail}. You can still add/edit materials manually.`);
+        } else {
+          setMessage("Live AI preview active.");
+        }
+      } catch (error) {
+        const errorMessage = String(error?.message || "Unable to capture camera frame.");
+        if (errorMessage.toLowerCase().includes("camera unmounted")) {
+          await stopLivePreview();
+          setMessage("Live preview was interrupted by camera remount. Tap Start Live Preview again.");
+          return;
+        }
+        setMessage(`Live preview frame failed: ${errorMessage}`);
       } finally {
         frameBusyRef.current = false;
       }
     },
-    [normalizeAiRows],
+    [normalizeAiRows, stopLivePreview],
   );
 
   const startLivePreview = useCallback(async () => {
+    if (startingLive || liveRunning) return;
+    setStartingLive(true);
     const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
     if (!permission?.granted) {
       setMessage("Camera permission is required for Live AI Preview");
+      setStartingLive(false);
+      return;
+    }
+    if (!cameraReady) {
+      setMessage("Camera is initializing. Wait 1-2 seconds and tap Start Live Preview again.");
+      setStartingLive(false);
       return;
     }
 
@@ -268,28 +310,49 @@ export function PostScreen() {
       } else {
         setMessage(formatApiFailure("Live session start", start));
       }
+      setStartingLive(false);
       return;
     }
 
     const sessionId = start.data?.session_id;
     if (!sessionId) {
       setMessage("Live session did not return session_id");
+      setStartingLive(false);
       return;
     }
 
-    setLiveSession(start.data);
-    setLiveRunning(true);
-    setAiSource(start.data?.source_mode || "");
-    await sendLiveFrame(sessionId);
-    clearLiveFrameLoop();
-    frameLoopRef.current = setInterval(() => {
-      sendLiveFrame(sessionId);
-    }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
-  }, [cameraPermission, clearLiveFrameLoop, requestCameraPermission, sendLiveFrame]);
+    try {
+      setLiveSession(start.data);
+      liveSessionIdRef.current = sessionId;
+      setLiveRunning(true);
+      setAiSource(start.data?.source_mode || "");
+      await sendLiveFrame(sessionId);
+      clearLiveFrameLoop();
+      frameLoopRef.current = setInterval(() => {
+        sendLiveFrame(sessionId);
+      }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
+    } catch (error) {
+      setMessage(`Live session start failed: ${error?.message || "Unknown error"}`);
+      await api.stopLiveVisionSession(sessionId);
+      liveSessionIdRef.current = "";
+      setLiveSession(null);
+      setLiveRunning(false);
+    } finally {
+      setStartingLive(false);
+    }
+  }, [
+    cameraPermission,
+    cameraReady,
+    clearLiveFrameLoop,
+    liveRunning,
+    requestCameraPermission,
+    sendLiveFrame,
+    startingLive,
+  ]);
 
   useEffect(() => {
     return () => {
-      stopLivePreview();
+      void stopLivePreview();
     };
   }, [stopLivePreview]);
 
@@ -439,7 +502,16 @@ export function PostScreen() {
         ) : (
           <>
             {cameraPermission?.granted ? (
-              <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
+              <CameraView
+                ref={cameraRef}
+                style={styles.cameraPreview}
+                facing="back"
+                onCameraReady={() => setCameraReady(true)}
+                onMountError={(event) => {
+                  setCameraReady(false);
+                  setMessage(`Camera mount failed: ${event?.nativeEvent?.message || "Unknown camera error"}`);
+                }}
+              />
             ) : (
               <View style={styles.permissionBox}>
                 <Text style={styles.permissionText}>Camera permission required for live preview.</Text>
@@ -448,9 +520,14 @@ export function PostScreen() {
             )}
             <View style={styles.liveButtonRow}>
               <PrimaryButton
-                title={liveRunning ? "Stop Live Preview" : "Start Live Preview"}
+                title={liveRunning ? "Stop Live Preview" : startingLive ? "Starting Live Preview..." : "Start Live Preview"}
                 onPress={liveRunning ? stopLivePreview : startLivePreview}
-                disabled={loadingClassify}
+                loading={startingLive}
+                disabled={
+                  loadingClassify ||
+                  startingLive ||
+                  (cameraPermission?.granted && !cameraReady && !liveRunning)
+                }
               />
               <SecondaryButton title="Reset AI Suggestions" onPress={resetAiSuggestions} />
             </View>

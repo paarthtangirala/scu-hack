@@ -10,9 +10,10 @@ from backend.services.validation import validate_live_frame_payload
 
 
 class _Resp:
-    def __init__(self, status_code: int, payload: dict):
+    def __init__(self, status_code: int, payload: dict, text: str = ""):
         self.status_code = status_code
         self._payload = payload
+        self.text = text
 
     def json(self):
         return self._payload
@@ -184,3 +185,68 @@ def test_frame_rate_throttle_raises_structured_service_error(monkeypatch):
     except GeminiLiveError as exc:
         assert exc.code == "live_frame_rate_limited"
         assert exc.status == 429
+
+
+def test_parse_normalizes_material_aliases():
+    service = GeminiLiveService()
+    parsed = service._parse_prediction(
+        '{"materials":[{"type":"aluminum cans","lbs":2.0},{"type":"glass bottle","lbs":1.2}],"notes":"desk items"}'
+    )
+
+    assert parsed is not None
+    assert [m["type"] for m in parsed["materials"]] == ["aluminum_cans", "glass_bottles"]
+    assert parsed["notes"] == "desk items"
+
+
+def test_non_200_response_log_includes_upstream_error_snippet(monkeypatch, caplog):
+    service = GeminiLiveService()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    started = service.start_session()
+    monkeypatch.setattr(
+        service,
+        "_invoke_model",
+        lambda **kwargs: _Resp(400, {"error": "bad request"}, text="invalid argument: inline_data is not supported"),
+    )
+    caplog.set_level("WARNING", logger="backend.services.gemini_live")
+
+    result = service.classify_frame(
+        session_id=started["session_id"],
+        frame_base64="aGVsbG8=",
+        mime_type="image/jpeg",
+    )
+
+    assert result["source"] == "gemini_live_demo"
+    records = [
+        r
+        for r in caplog.records
+        if getattr(r, "event", "") == "live_vision_frame_failed" and getattr(r, "reason", "") == "non_200_response"
+    ]
+    assert records
+    assert "inline_data" in getattr(records[-1], "upstream_error", "")
+
+
+def test_invoke_model_uses_inline_data_contract(monkeypatch):
+    service = GeminiLiveService()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    captured = {}
+
+    def _fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Resp(200, _frame_payload('{"materials":[{"type":"cardboard","lbs":1.0}],"notes":"ok"}'))
+
+    monkeypatch.setattr("backend.services.gemini_live.requests.post", _fake_post)
+
+    response = service._invoke_model(
+        model="gemini-2.5-flash",
+        frame_base64="abc123",
+        mime_type="image/jpeg",
+        timeout_seconds=12,
+    )
+
+    assert response.status_code == 200
+    parts = captured["json"]["contents"][0]["parts"]
+    assert parts[1]["inlineData"]["mimeType"] == "image/jpeg"
+    assert parts[1]["inlineData"]["data"] == "abc123"
+    assert "inline_data" not in parts[1]

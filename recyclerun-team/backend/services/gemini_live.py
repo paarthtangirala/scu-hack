@@ -27,6 +27,7 @@ DEFAULT_MIN_FRAME_INTERVAL_MS = 1000
 DEFAULT_MIN_LBS = 0.1
 DEFAULT_MAX_LBS = 500.0
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png"}
+UPSTREAM_ERROR_SNIPPET_MAX = 240
 
 FENCED_JSON_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 
@@ -49,6 +50,34 @@ cardboard, aluminum_cans, plastic_pet, plastic_hdpe, glass_bottles,
 copper_wire, scrap_aluminum, ewaste_noncrt, ewaste_crt, steel_iron,
 newspaper, scrap_metal_mixed
 Do not include any keys outside this schema."""
+
+MATERIAL_TYPE_ALIASES = {
+    "aluminum": "aluminum_cans",
+    "aluminum can": "aluminum_cans",
+    "aluminum cans": "aluminum_cans",
+    "aluminium can": "aluminum_cans",
+    "aluminium cans": "aluminum_cans",
+    "cardboard box": "cardboard",
+    "cardboard boxes": "cardboard",
+    "pet plastic": "plastic_pet",
+    "pet bottle": "plastic_pet",
+    "pet bottles": "plastic_pet",
+    "hdpe plastic": "plastic_hdpe",
+    "hdpe bottle": "plastic_hdpe",
+    "hdpe bottles": "plastic_hdpe",
+    "glass bottle": "glass_bottles",
+    "glass bottles": "glass_bottles",
+    "copper": "copper_wire",
+    "scrap aluminum": "scrap_aluminum",
+    "scrap metal": "scrap_metal_mixed",
+    "mixed scrap metal": "scrap_metal_mixed",
+    "steel": "steel_iron",
+    "iron": "steel_iron",
+    "newspaper paper": "newspaper",
+    "e waste crt": "ewaste_crt",
+    "e waste noncrt": "ewaste_noncrt",
+    "ewaste": "ewaste_noncrt",
+}
 
 
 class GeminiLiveError(Exception):
@@ -202,6 +231,7 @@ class GeminiLiveService:
                 timeout=False,
                 reason="non_200_response",
                 http_status=response.status_code,
+                upstream_error=self._truncate_text(getattr(response, "text", "")),
             )
             return self._build_demo_prediction(
                 session=session,
@@ -409,11 +439,15 @@ class GeminiLiveService:
                     "role": "user",
                     "parts": [
                         {"text": LIVE_PROMPT},
-                        {"inline_data": {"mime_type": mime_type, "data": frame_base64}},
+                        {"inlineData": {"mimeType": mime_type, "data": frame_base64}},
                     ],
                 }
             ],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 600},
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 600,
+                "responseMimeType": "application/json",
+            },
         }
         return requests.post(endpoint, json=payload, timeout=timeout_seconds)
 
@@ -438,7 +472,7 @@ class GeminiLiveService:
             for item in raw_materials:
                 if not isinstance(item, dict):
                     continue
-                mat_type = str(item.get("type", "")).strip()
+                mat_type = self._normalize_material_type(item.get("type"))
                 if mat_type not in MATERIAL_RATES:
                     continue
                 lbs_raw = item.get("lbs")
@@ -612,6 +646,24 @@ class GeminiLiveService:
         if value < minimum:
             return default
         return value
+
+    @staticmethod
+    def _normalize_material_type(raw_type: object) -> str:
+        text = str(raw_type or "").strip().lower()
+        if not text:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+        if normalized in MATERIAL_RATES:
+            return normalized
+        alias_key = normalized.replace("_", " ")
+        return MATERIAL_TYPE_ALIASES.get(alias_key, "")
+
+    @staticmethod
+    def _truncate_text(text: str) -> str:
+        compact = " ".join(str(text or "").split())
+        if len(compact) <= UPSTREAM_ERROR_SNIPPET_MAX:
+            return compact
+        return compact[:UPSTREAM_ERROR_SNIPPET_MAX] + "..."
 
     @staticmethod
     def _elapsed_ms(start_ns: int) -> int:
