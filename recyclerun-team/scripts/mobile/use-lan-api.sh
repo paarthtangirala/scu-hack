@@ -4,6 +4,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MOBILE_ENV_FILE="${ROOT_DIR}/mobile/.env"
 BACKEND_PORT="${BACKEND_PORT:-5050}"
+FORCE_LAN_PROFILE="${FORCE_LAN_PROFILE:-0}"
+
+if [[ -f "${MOBILE_ENV_FILE}" ]] && [[ "${FORCE_LAN_PROFILE}" != "1" ]]; then
+  if grep -qE '^EXPO_PUBLIC_AUTO_LAN=0$' "${MOBILE_ENV_FILE}"; then
+    echo "Detected production mobile profile (EXPO_PUBLIC_AUTO_LAN=0). Skipping LAN override."
+    echo "Set FORCE_LAN_PROFILE=1 to force LAN profile rewrite."
+    exit 0
+  fi
+fi
 
 detect_lan_ip() {
   local ip=""
@@ -33,7 +42,11 @@ if [[ -z "${LAN_IP}" ]]; then
 fi
 
 API_BASE_URL="http://${LAN_IP}:${BACKEND_PORT}/api"
-printf 'EXPO_PUBLIC_API_BASE_URL=%s\n' "${API_BASE_URL}" > "${MOBILE_ENV_FILE}"
+cat > "${MOBILE_ENV_FILE}" <<EOF
+EXPO_PUBLIC_API_BASE_URL=${API_BASE_URL}
+EXPO_PUBLIC_API_PORT=${BACKEND_PORT}
+EXPO_PUBLIC_AUTO_LAN=1
+EOF
 
 echo "Wrote ${MOBILE_ENV_FILE}"
 echo "API base set to: ${API_BASE_URL}"
@@ -44,4 +57,3 @@ else
   echo "Warning: backend is not reachable on 127.0.0.1:${BACKEND_PORT}/api/health" >&2
   echo "Start backend first before opening Expo Go." >&2
 fi
-
