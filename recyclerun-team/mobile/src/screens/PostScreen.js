@@ -659,7 +659,6 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       ...form,
       household_name: effectiveName,
       phone: effectivePhone,
-      profile_id: profile?.id || "",
       lat,
       lng,
       materials: merged,
