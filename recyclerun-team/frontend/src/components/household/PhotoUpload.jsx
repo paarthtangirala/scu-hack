@@ -5,6 +5,7 @@
 import { useState, useRef } from 'react';
 import { api } from '../../services/api';
 import { DEMO_CLASSIFICATION, MATERIAL_RATES } from '../../services/demoData';
+import { normalizeLbs, safeClassifyMaterials } from '../../services/uploadPipeline';
 import { Spinner } from '../ui/Spinner';
 import { Tag } from '../ui/Tag';
 
@@ -48,10 +49,42 @@ export function PhotoUpload({ onResult }) {
       setPreview(dataUrl);
       setScanning(true);
       const res = await api.classifyImage(dataUrl);
-      const final = res || DEMO_CLASSIFICATION;
+      const canonicalMaterials = safeClassifyMaterials(res);
+      const rawMaterials = Array.isArray(res?.data?.materials) ? res.data.materials : [];
+      const source = res?.ok ? (res?.data?.source || 'amd') : DEMO_CLASSIFICATION.source;
+      const displayMaterials = rawMaterials
+        .map((m) => {
+          const type = typeof m?.type === 'string' ? m.type : '';
+          if (!type) return null;
+          const lbs = normalizeLbs(m?.lbs ?? m?.weight_lbs);
+          if (lbs <= 0) return null;
+          const rate = MATERIAL_RATES[type]?.rate || 0;
+          const fallbackValue = Math.round(lbs * rate * 100) / 100;
+          const value = Number.isFinite(Number(m?.value)) ? Number(m.value) : fallbackValue;
+          return {
+            ...m,
+            type,
+            lbs,
+            value,
+            label: m?.label || MATERIAL_RATES[type]?.label || type,
+            emoji: m?.emoji || MATERIAL_RATES[type]?.emoji || '♻️',
+            confidence: Number.isFinite(Number(m?.confidence)) ? Number(m.confidence) : 0.8,
+          };
+        })
+        .filter(Boolean);
+      const total_lbs = Math.round(displayMaterials.reduce((sum, m) => sum + m.lbs, 0) * 10) / 10;
+      const total_value = Math.round(displayMaterials.reduce((sum, m) => sum + m.value, 0) * 100) / 100;
+      const final = {
+        success: !!res?.ok,
+        source,
+        materials: displayMaterials,
+        total_lbs,
+        total_value,
+        notes: res?.data?.notes || '',
+      };
       setResult(final);
       setScanning(false);
-      onResult?.(final);
+      onResult?.(canonicalMaterials);
     };
     reader.readAsDataURL(file);
   }
@@ -59,7 +92,7 @@ export function PhotoUpload({ onResult }) {
   function clear() {
     setPreview(null); setResult(null);
     if (inputRef.current) inputRef.current.value = '';
-    onResult?.(null);
+    onResult?.([]);
   }
 
   return (
@@ -99,7 +132,7 @@ export function PhotoUpload({ onResult }) {
               {result.source === 'amd' ? '✓ AMD Vision' : result.source === 'claude' ? '✓ Backup Vision' : 'Demo mode'}
             </Tag>
           </div>
-          {result.materials.map((m, i) => (
+          {(result.materials || []).map((m, i) => (
             <div key={i} className="material-row">
               <div className="material-info">
                 <span className="material-emoji">{m.emoji || MATERIAL_RATES[m.type]?.emoji || '♻️'}</span>

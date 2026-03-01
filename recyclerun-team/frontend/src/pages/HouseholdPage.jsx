@@ -3,28 +3,32 @@ import { useState } from 'react';
 import { PhotoUpload } from '../components/household/PhotoUpload';
 import { ManualMaterials } from '../components/household/ManualMaterials';
 import { api } from '../services/api';
-import { MATERIAL_RATES } from '../services/demoData';
+import { buildListingPayload } from '../services/uploadPipeline';
 
 export function HouseholdPage({ onToast }) {
-  const [aiResult, setAiResult] = useState(null);
+  const [aiMaterials, setAiMaterials] = useState([]);
   const [manualMats, setManualMats] = useState([]);
   const [form, setForm] = useState({ listing_kind:'household', name:'', address:'', phone:'', notes:'' });
 
   async function post() {
     if (!form.name || !form.address) { onToast('⚠️ Please enter name and address'); return; }
-    const materials = [
-      ...(aiResult?.materials || []).map(m => ({ type: m.type, lbs: m.lbs, value: m.value })),
-      ...manualMats.filter(m => m.lbs > 0).map(m => ({
-        type: m.type, lbs: m.lbs,
-        value: parseFloat((m.lbs * (MATERIAL_RATES[m.type]?.rate || 0)).toFixed(2))
-      }))
-    ];
-    if (!materials.length) { onToast('⚠️ Add at least one material'); return; }
     const lat = 37.3541 + (Math.random() - 0.5) * 0.05;
     const lng = -121.9552 + (Math.random() - 0.5) * 0.05;
-    await api.createListing({ ...form, household_name: form.name, lat, lng, materials });
+    const payload = buildListingPayload({
+      form,
+      aiMaterials,
+      manualMaterials: manualMats,
+      lat,
+      lng,
+    });
+    if (!payload.materials.length) { onToast('⚠️ Add at least one material'); return; }
+    const res = await api.createListing(payload);
+    if (!res?.ok) {
+      onToast(`⚠️ ${res?.error || 'Unable to post listing'}`);
+      return;
+    }
     onToast('✅ Listing posted! Drivers nearby have been notified.');
-    setForm({ listing_kind:'household', name:'', address:'', phone:'', notes:'' }); setAiResult(null); setManualMats([]);
+    setForm({ listing_kind:'household', name:'', address:'', phone:'', notes:'' }); setAiMaterials([]); setManualMats([]);
   }
 
   return (
@@ -33,7 +37,7 @@ export function HouseholdPage({ onToast }) {
         <div>
           <div className="card mb-2">
             <div className="section-label">STEP 1 — PHOTO (AMD AI)</div>
-            <PhotoUpload onResult={setAiResult} />
+            <PhotoUpload onResult={setAiMaterials} />
           </div>
         </div>
         <div>
