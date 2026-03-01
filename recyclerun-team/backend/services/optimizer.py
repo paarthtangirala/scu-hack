@@ -19,8 +19,10 @@ MPH = 25.0  # urban Bay Area estimate
 STOP_TIME_MIN = 5  # minutes per stop to load
 LNS_TIME_SEC = 2
 CAPACITY_SCALE = 10  # tenths of pounds for integer capacity constraints
-VALUE_PENALTY_MULTIPLIER = 100
-LBS_PENALTY_MULTIPLIER = 75  # converts lbs "prize" into distance-like objective scale
+# Tuned to make objective preference clearer in OR-Tools prize collection:
+# value objective remains dollar-driven while lbs objective more aggressively favors truck fill.
+VALUE_PENALTY_MULTIPLIER = 60
+LBS_PENALTY_MULTIPLIER = 180  # converts lbs "prize" into distance-like objective scale
 MILES_TO_METERS = 1609.34
 
 
