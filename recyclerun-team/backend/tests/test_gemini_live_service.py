@@ -223,6 +223,30 @@ def test_parse_allows_empty_materials_list_without_forcing_demo_fallback():
     assert parsed["notes"] == "no recyclables visible"
 
 
+def test_parse_failure_uses_last_success_prediction_cache(monkeypatch):
+    service = GeminiLiveService()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    started = service.start_session()
+    service._sessions[started["session_id"]].last_success_prediction = {
+        "materials": [{"type": "glass_bottles", "label": "Glass Bottles", "emoji": "🍾", "lbs": 0.7, "rate": 0.1, "value": 0.07, "confidence": 0.86}],
+        "total_lbs": 0.7,
+        "total_value": 0.07,
+        "notes": "cached glass bottle",
+    }
+    monkeypatch.setattr(service, "_invoke_model", lambda **kwargs: _Resp(200, _frame_payload("not-json")))
+
+    result = service.classify_frame(
+        session_id=started["session_id"],
+        frame_base64="aGVsbG8=",
+        mime_type="image/jpeg",
+    )
+
+    assert result["success"] is True
+    assert result["source"] == "gemini_live"
+    assert result["materials"][0]["type"] == "glass_bottles"
+    assert result["notes"] == "cached glass bottle"
+
+
 def test_parse_accepts_nested_material_container_and_estimated_weight_string():
     service = GeminiLiveService()
     parsed = service._parse_prediction(

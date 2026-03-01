@@ -102,6 +102,7 @@ class GeminiLiveSession:
     source_mode: str = "live"
     fallback_reason: str = ""
     last_frame_at: float = 0.0
+    last_success_prediction: dict | None = None
 
 
 class GeminiLiveService:
@@ -199,7 +200,7 @@ class GeminiLiveService:
                 reason="request_timeout",
                 exception_type=type(exc).__name__,
             )
-            return self._build_demo_prediction(
+            return self._fallback_from_cache_or_demo(
                 session=session,
                 latency_ms=self._elapsed_ms(start_ns),
                 reason="upstream_timeout",
@@ -215,7 +216,7 @@ class GeminiLiveService:
                 reason="request_exception",
                 exception_type=type(exc).__name__,
             )
-            return self._build_demo_prediction(
+            return self._fallback_from_cache_or_demo(
                 session=session,
                 latency_ms=self._elapsed_ms(start_ns),
                 reason="upstream_exception",
@@ -233,7 +234,7 @@ class GeminiLiveService:
                 http_status=response.status_code,
                 upstream_error=self._truncate_text(getattr(response, "text", "")),
             )
-            return self._build_demo_prediction(
+            return self._fallback_from_cache_or_demo(
                 session=session,
                 latency_ms=self._elapsed_ms(start_ns),
                 reason="upstream_non_200",
@@ -269,12 +270,19 @@ class GeminiLiveService:
                 timeout=False,
                 reason="parse_failed",
             )
-            return self._build_demo_prediction(
+            return self._fallback_from_cache_or_demo(
                 session=session,
                 latency_ms=self._elapsed_ms(start_ns),
                 reason="parse_failed",
             )
 
+        with self._lock:
+            session.last_success_prediction = {
+                "materials": parsed["materials"],
+                "total_lbs": parsed["total_lbs"],
+                "total_value": parsed["total_value"],
+                "notes": parsed["notes"],
+            }
         stable = self._update_stability(session, parsed["materials"])
         payload = {
             "success": True,
@@ -560,6 +568,24 @@ class GeminiLiveService:
             "total_value": 0.0,
             "notes": f"Live fallback: {reason}",
             "stable": False,
+            "latency_ms": latency_ms,
+        }
+
+    def _fallback_from_cache_or_demo(self, *, session: GeminiLiveSession, latency_ms: int, reason: str) -> dict:
+        cached = session.last_success_prediction
+        if not cached:
+            return self._build_demo_prediction(session=session, latency_ms=latency_ms, reason=reason)
+        stable = self._update_stability(session, cached.get("materials", []))
+        return {
+            "success": True,
+            "source": "gemini_live",
+            "session_id": session.session_id,
+            "frame_seq": session.frame_seq,
+            "materials": cached.get("materials", []),
+            "total_lbs": cached.get("total_lbs", 0.0),
+            "total_value": cached.get("total_value", 0.0),
+            "notes": cached.get("notes", ""),
+            "stable": stable,
             "latency_ms": latency_ms,
         }
 

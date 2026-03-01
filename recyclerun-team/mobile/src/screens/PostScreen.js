@@ -54,17 +54,27 @@ export function PostScreen() {
   const [liveRunning, setLiveRunning] = useState(false);
   const [startingLive, setStartingLive] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [pendingDetection, setPendingDetection] = useState(null);
+  const [scanDecisionPromptVisible, setScanDecisionPromptVisible] = useState(false);
+  const [livePausedForReview, setLivePausedForReview] = useState(false);
+  const [lastPromptSignature, setLastPromptSignature] = useState("");
+  const [lastPromptAtMs, setLastPromptAtMs] = useState(0);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
   const liveSessionIdRef = useRef("");
   const frameLoopRef = useRef(null);
   const frameBusyRef = useRef(false);
+  const livePausedForReviewRef = useRef(false);
 
   const materialKeys = useMemo(() => Object.keys(materials), [materials]);
 
   useEffect(() => {
     lockedTypesRef.current = lockedTypes;
   }, [lockedTypes]);
+
+  useEffect(() => {
+    livePausedForReviewRef.current = livePausedForReview;
+  }, [livePausedForReview]);
 
   useEffect(() => {
     if (!cameraPermission?.granted) {
@@ -223,6 +233,9 @@ export function PostScreen() {
     clearLiveFrameLoop();
     setLiveRunning(false);
     setStartingLive(false);
+    setLivePausedForReview(false);
+    setPendingDetection(null);
+    setScanDecisionPromptVisible(false);
     frameBusyRef.current = false;
     const sessionId = liveSessionIdRef.current;
     liveSessionIdRef.current = "";
@@ -233,7 +246,7 @@ export function PostScreen() {
 
   const sendLiveFrame = useCallback(
     async (sessionId) => {
-      if (!sessionId || frameBusyRef.current || !cameraRef.current) return;
+      if (!sessionId || frameBusyRef.current || !cameraRef.current || livePausedForReviewRef.current) return;
       frameBusyRef.current = true;
       try {
         const photo = await cameraRef.current.takePictureAsync({
@@ -259,7 +272,8 @@ export function PostScreen() {
           return;
         }
         setAiSource(response.data?.source || "gemini_live");
-        setAiMaterials(normalizeAiRows(response.data?.materials || []));
+        const normalizedRows = normalizeAiRows(response.data?.materials || []);
+        setAiMaterials(normalizedRows);
         if (response.data?.source === "gemini_live_demo") {
           const fallbackReason = String(response.data?.notes || "")
             .replace(/^Live fallback:\s*/i, "")
@@ -268,6 +282,30 @@ export function PostScreen() {
           setMessage(`Live AI fallback mode active${detail}. You can still add/edit materials manually.`);
         } else {
           setMessage("Live AI preview active.");
+          if (normalizedRows.length > 0 && !pendingDetection && !scanDecisionPromptVisible) {
+            const primary = normalizedRows
+              .slice()
+              .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0))[0];
+            if (primary?.type) {
+              const now = Date.now();
+              const signature = `${primary.type}:${Number(primary.lbs || 0).toFixed(1)}`;
+              if (signature !== lastPromptSignature || now - lastPromptAtMs > 8000) {
+                setPendingDetection({
+                  type: primary.type,
+                  lbs: Number(primary.lbs || 0),
+                  source: response.data?.source || "gemini_live",
+                });
+                setLivePausedForReview(true);
+                setScanDecisionPromptVisible(false);
+                setLastPromptSignature(signature);
+                setLastPromptAtMs(now);
+                clearLiveFrameLoop();
+                setMessage(
+                  `Detected ${primary.type} (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
+                );
+              }
+            }
+          }
         }
       } catch (error) {
         const errorMessage = String(error?.message || "Unable to capture camera frame.");
@@ -281,8 +319,62 @@ export function PostScreen() {
         frameBusyRef.current = false;
       }
     },
-    [normalizeAiRows, stopLivePreview],
+    [
+      clearLiveFrameLoop,
+      lastPromptAtMs,
+      lastPromptSignature,
+      normalizeAiRows,
+      pendingDetection,
+      scanDecisionPromptVisible,
+      stopLivePreview,
+    ],
   );
+
+  const runLiveLoop = useCallback(
+    (sessionId) => {
+      if (!sessionId) return;
+      clearLiveFrameLoop();
+      frameLoopRef.current = setInterval(() => {
+        sendLiveFrame(sessionId);
+      }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
+    },
+    [clearLiveFrameLoop, sendLiveFrame],
+  );
+
+  const resumeScanning = useCallback(async () => {
+    const sessionId = liveSessionIdRef.current;
+    if (!sessionId) return;
+    setLivePausedForReview(false);
+    setScanDecisionPromptVisible(false);
+    setMessage("Live AI preview active.");
+    await sendLiveFrame(sessionId);
+    runLiveLoop(sessionId);
+  }, [runLiveLoop, sendLiveFrame]);
+
+  const finishDetectionDecision = useCallback((added) => {
+    if (added) {
+      setMessage("Item added. Keep scanning or end live preview.");
+    } else {
+      setMessage("Item skipped. Keep scanning or end live preview.");
+    }
+    setPendingDetection(null);
+    setScanDecisionPromptVisible(true);
+  }, []);
+
+  const confirmAddDetected = useCallback(() => {
+    if (!pendingDetection?.type || !Number.isFinite(Number(pendingDetection?.lbs))) {
+      finishDetectionDecision(false);
+      return;
+    }
+    const lbs = Math.round(Number(pendingDetection.lbs) * 10) / 10;
+    upsertManualLock(pendingDetection.type);
+    setManualRows((prev) => [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs }]);
+    finishDetectionDecision(true);
+  }, [finishDetectionDecision, pendingDetection, upsertManualLock]);
+
+  const skipDetected = useCallback(() => {
+    finishDetectionDecision(false);
+  }, [finishDetectionDecision]);
 
   const startLivePreview = useCallback(async () => {
     if (startingLive || liveRunning) return;
@@ -325,12 +417,12 @@ export function PostScreen() {
       setLiveSession(start.data);
       liveSessionIdRef.current = sessionId;
       setLiveRunning(true);
+      setLivePausedForReview(false);
+      setPendingDetection(null);
+      setScanDecisionPromptVisible(false);
       setAiSource(start.data?.source_mode || "");
       await sendLiveFrame(sessionId);
-      clearLiveFrameLoop();
-      frameLoopRef.current = setInterval(() => {
-        sendLiveFrame(sessionId);
-      }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
+      runLiveLoop(sessionId);
     } catch (error) {
       setMessage(`Live session start failed: ${error?.message || "Unknown error"}`);
       await api.stopLiveVisionSession(sessionId);
@@ -346,6 +438,7 @@ export function PostScreen() {
     clearLiveFrameLoop,
     liveRunning,
     requestCameraPermission,
+    runLiveLoop,
     sendLiveFrame,
     startingLive,
   ]);
@@ -365,6 +458,9 @@ export function PostScreen() {
     setLockedTypes([]);
     setAiMaterials([]);
     setAiSource("");
+    setPendingDetection(null);
+    setScanDecisionPromptVisible(false);
+    setLivePausedForReview(false);
     setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
   };
 
@@ -534,6 +630,28 @@ export function PostScreen() {
             <Text style={styles.liveHint}>
               Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
             </Text>
+            {pendingDetection ? (
+              <View style={styles.confirmBox}>
+                <Text style={styles.confirmTitle}>Detected Item</Text>
+                <Text style={styles.confirmText}>
+                  {materials[pendingDetection.type]?.emoji || "♻️"} {pendingDetection.type} - {Number(pendingDetection.lbs || 0).toFixed(1)} lbs
+                </Text>
+                <Text style={styles.confirmText}>Add this item to the listing?</Text>
+                <View style={styles.confirmActions}>
+                  <PrimaryButton title="Add Item" onPress={confirmAddDetected} />
+                  <SecondaryButton title="Skip Item" onPress={skipDetected} />
+                </View>
+              </View>
+            ) : null}
+            {scanDecisionPromptVisible ? (
+              <View style={styles.confirmBox}>
+                <Text style={styles.confirmTitle}>Continue Live Scan?</Text>
+                <View style={styles.confirmActions}>
+                  <PrimaryButton title="Keep Scanning" onPress={resumeScanning} />
+                  <SecondaryButton title="End Live Preview" onPress={stopLivePreview} />
+                </View>
+              </View>
+            ) : null}
           </>
         )}
         {aiMaterials.length ? (
@@ -713,6 +831,28 @@ const styles = StyleSheet.create({
     marginTop: 8,
     color: colors.muted,
     fontSize: 11,
+  },
+  confirmBox: {
+    marginTop: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    backgroundColor: "#FCFBF6",
+    gap: 6,
+  },
+  confirmTitle: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  confirmText: {
+    color: colors.ink,
+    fontSize: 13,
+  },
+  confirmActions: {
+    gap: 8,
+    marginTop: 4,
   },
   materialList: {
     marginTop: 10,
