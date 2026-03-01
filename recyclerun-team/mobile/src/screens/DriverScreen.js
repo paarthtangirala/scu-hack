@@ -16,11 +16,13 @@ import { Card, PrimaryButton, SectionTitle, SecondaryButton, StatPill, colors } 
 let MapViewComponent = null;
 let MarkerComponent = null;
 let PolylineComponent = null;
+let ProviderGoogle = null;
 if (Platform.OS !== "web") {
   const maps = require("react-native-maps");
   MapViewComponent = maps.default;
   MarkerComponent = maps.Marker;
   PolylineComponent = maps.Polyline;
+  ProviderGoogle = maps.PROVIDER_GOOGLE;
 }
 
 const OBJECTIVES = [
@@ -301,6 +303,7 @@ export function DriverScreen() {
     () => routeStops.map(stopCoordinate).filter(Boolean),
     [routeStops],
   );
+  const mapTitle = Platform.OS === "ios" ? "Route Map (Apple basemap + Google Directions)" : "Route Map (Google Maps)";
   const mapCoordinates = useMemo(
     () => (routePolyline.length ? routePolyline : fallbackRouteCoordinates(routeStopCoordinates)),
     [routePolyline, routeStopCoordinates],
@@ -406,9 +409,13 @@ export function DriverScreen() {
 
       {route?.stops?.length ? (
         <Card>
-          <Text style={styles.stopsTitle}>Route Map (Google Maps)</Text>
+          <Text style={styles.stopsTitle}>{mapTitle}</Text>
           {MapViewComponent ? (
-            <MapViewComponent style={styles.map} initialRegion={mapRegion}>
+            <MapViewComponent
+              style={styles.map}
+              initialRegion={mapRegion}
+              provider={Platform.OS === "android" && ProviderGoogle ? ProviderGoogle : undefined}
+            >
               <MarkerComponent coordinate={DRIVER_START} title="Driver Start" description="Santa Clara base" />
               {routeStops.map((stop, idx) => {
                 const coordinate = stopCoordinate(stop);
@@ -435,8 +442,13 @@ export function DriverScreen() {
               <Text style={styles.stopMeta}>Map preview is only available on iOS/Android native runtimes.</Text>
             </View>
           )}
+          {Platform.OS === "ios" ? (
+            <Text style={styles.mapCaption}>
+              iOS Expo Go uses Apple basemap. For full Google basemap on iOS, use an EAS iOS development build.
+            </Text>
+          ) : null}
           <Text style={styles.mapCaption}>
-            {routeMapMessage || "Showing route geometry for the optimized stop sequence."}
+            {routeMapMessage || "Showing optimized stop geometry. Google Directions API is used when key is configured."}
           </Text>
         </Card>
       ) : null}

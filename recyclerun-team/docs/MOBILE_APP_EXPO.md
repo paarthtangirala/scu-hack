@@ -78,6 +78,13 @@ Required Google services for this key:
 - Maps SDK for iOS / Android (for map tiles in app)
 - Directions API (for optimized route polyline)
 
+## iOS Note (Expo Go)
+
+On iOS, Expo Go renders the map using Apple basemap by default.
+
+- You can still use Google Directions API for route polyline/geometry.
+- If you need Google basemap on iOS, create an EAS iOS development build and configure `ios.config.googleMapsApiKey` in Expo app config.
+
 ## 6) Smoke Checklist (2 min)
 
 1. Open **Home** tab:
