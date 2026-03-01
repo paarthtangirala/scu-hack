@@ -14,4 +14,4 @@ COPY .env.example ./.env.example
 
 EXPOSE 5050
 
-CMD ["sh", "-c", "gunicorn --workers=${GUNICORN_WORKERS:-2} --threads=${GUNICORN_THREADS:-4} --timeout=${GUNICORN_TIMEOUT:-120} --bind 0.0.0.0:${PORT} backend.wsgi:app"]
+CMD ["sh", "-c", "gunicorn --workers=${GUNICORN_WORKERS:-1} --threads=${GUNICORN_THREADS:-4} --timeout=${GUNICORN_TIMEOUT:-120} --bind 0.0.0.0:${PORT} backend.wsgi:app"]

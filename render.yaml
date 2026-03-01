@@ -5,10 +5,12 @@ services:
     rootDir: recyclerun-team
     autoDeploy: true
     buildCommand: pip install --no-cache-dir -r backend/requirements.txt
-    startCommand: gunicorn --workers=2 --threads=4 --timeout=120 --bind 0.0.0.0:$PORT backend.wsgi:app
+    startCommand: gunicorn --workers=${WEB_CONCURRENCY:-1} --threads=4 --timeout=120 --bind 0.0.0.0:$PORT backend.wsgi:app
     healthCheckPath: /api/health
     envVars:
       - key: FLASK_ENV
         value: production
       - key: ENABLE_CLAUDE_FALLBACK
         value: "0"
+      - key: STORE_DB_PATH
+        value: /tmp/recyclerun_store.sqlite3

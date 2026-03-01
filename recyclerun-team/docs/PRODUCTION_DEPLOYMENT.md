@@ -35,6 +35,8 @@ Repo includes [`render.yaml`](/Users/paarthtangirala/Documents/Documents-MacBook
    - `TWILIO_ACCOUNT_SID`
    - `TWILIO_AUTH_TOKEN`
    - `TWILIO_PHONE_NUMBER`
+   - `STORE_DB_PATH=/tmp/recyclerun_store.sqlite3` (shared SQLite state for multi-worker consistency)
+   - `WEB_CONCURRENCY=1` (stability-first default; increase only after load-testing)
 5. Deploy and verify:
    - `GET https://<render-domain>/api/health` returns `status: ok`.
 
@@ -66,6 +68,8 @@ npm start
 1. `/api/health` external check passing.
 2. `POST /api/optimize-route` p95 latency < 3s.
 3. `POST /api/accept-route` idempotency checks passing.
-4. AMD key configured (or demo fallback explicitly accepted).
-5. Twilio creds configured or notifier fallback behavior verified.
-6. Mobile `API source: env` and production HTTPS URL shown.
+4. `accept-route` replay returns `idempotent_replay=true` with same request id.
+5. Multi-request consistency validated under current `WEB_CONCURRENCY`.
+6. AMD key configured (or demo fallback explicitly accepted).
+7. Twilio creds configured or notifier fallback behavior verified.
+8. Mobile `API source: env` and production HTTPS URL shown.
