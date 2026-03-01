@@ -213,12 +213,16 @@ Producer path:
 
 ### `VoiceNotifier.notify` Result Union
 
+Base required fields for every notifier result:
+
+- `success`: boolean
+- `mode`: `live` | `demo` | `failed`
+
 | Variant | Shape | Required fields | Production condition |
 |---|---|---|---|
-| Live call | `{success:true, mode:"live", call_sid:string}` | `success`, `mode`, `call_sid` | Audio generated and Twilio call succeeds |
-| Demo A | `{success:true, mode:"demo", message:string}` | `success`, `mode`, `message` | Audio unavailable/fails before call attempt |
-| Demo B | `{success:true, mode:"demo"}` | `success`, `mode` | Audio exists but Twilio credentials missing in `_make_call` |
-| Failed | `{success:false, mode:"failed", error:string}` | `success`, `mode`, `error` | Twilio call path raises exception |
+| Live call | `{success:true, mode:"live", call_sid:string}` | `success`, `mode`, `call_sid` | Twilio credentials present, demo mode not forced, call succeeds |
+| Demo | `{success:true, mode:"demo", message:string, reason:string}` | `success`, `mode`, `message`, `reason` | Twilio not configured OR demo mode forced |
+| Failed | `{success:false, mode:"failed", error:string, reason:string}` | `success`, `mode`, `error`, `reason` | Twilio configured and call attempt fails or times out; unexpected notifier exceptions are converted to failed |
 
 Route-layer retry augmentation:
 
@@ -244,30 +248,23 @@ JSON-schema-like snippet (notify union + route augmentation):
     },
     {
       "type": "object",
-      "required": ["success", "mode", "message"],
+      "required": ["success", "mode", "message", "reason"],
       "properties": {
         "success": { "const": true },
         "mode": { "const": "demo" },
         "message": { "type": "string" },
+        "reason": { "enum": ["twilio_not_configured", "forced_demo_mode"] },
         "retry_attempt": { "type": "integer", "minimum": 2 }
       }
     },
     {
       "type": "object",
-      "required": ["success", "mode"],
-      "properties": {
-        "success": { "const": true },
-        "mode": { "const": "demo" },
-        "retry_attempt": { "type": "integer", "minimum": 2 }
-      }
-    },
-    {
-      "type": "object",
-      "required": ["success", "mode", "error"],
+      "required": ["success", "mode", "error", "reason"],
       "properties": {
         "success": { "const": false },
         "mode": { "const": "failed" },
-        "error": { "type": "string" }
+        "error": { "type": "string" },
+        "reason": { "enum": ["twilio_timeout", "twilio_exception", "notify_exception", "unknown_failure"] }
       }
     }
   ]
@@ -315,9 +312,8 @@ JSON-schema-like snippet (`notifications[]` entry, current):
     "notification": {
       "oneOf": [
         { "type": "object", "required": ["success", "mode", "call_sid"], "properties": { "success": { "const": true }, "mode": { "const": "live" }, "call_sid": { "type": "string" }, "retry_attempt": { "type": "integer", "minimum": 2 } } },
-        { "type": "object", "required": ["success", "mode", "message"], "properties": { "success": { "const": true }, "mode": { "const": "demo" }, "message": { "type": "string" }, "retry_attempt": { "type": "integer", "minimum": 2 } } },
-        { "type": "object", "required": ["success", "mode"], "properties": { "success": { "const": true }, "mode": { "const": "demo" }, "retry_attempt": { "type": "integer", "minimum": 2 } } },
-        { "type": "object", "required": ["success", "mode", "error"], "properties": { "success": { "const": false }, "mode": { "const": "failed" }, "error": { "type": "string" } } },
+        { "type": "object", "required": ["success", "mode", "message", "reason"], "properties": { "success": { "const": true }, "mode": { "const": "demo" }, "message": { "type": "string" }, "reason": { "enum": ["twilio_not_configured", "forced_demo_mode"] }, "retry_attempt": { "type": "integer", "minimum": 2 } } },
+        { "type": "object", "required": ["success", "mode", "error", "reason"], "properties": { "success": { "const": false }, "mode": { "const": "failed" }, "error": { "type": "string" }, "reason": { "enum": ["twilio_timeout", "twilio_exception", "notify_exception", "unknown_failure"] } } },
         { "type": "object", "required": ["success", "mode", "reason"], "properties": { "success": { "const": false }, "mode": { "const": "skipped" }, "reason": { "enum": ["duplicate_stop", "not_found", "already_claimed", "already_completed"] } } }
       ]
     }
@@ -344,11 +340,20 @@ Route-level error semantics for `/api/classify`:
 
 | Layer | Condition | Result mode | Shape |
 |---|---|---|---|
-| `VoiceNotifier.notify` | Audio generation unavailable/fails | `demo` | `{success:true, mode:"demo", message:string}` |
-| `VoiceNotifier._make_call` | Twilio credentials missing | `demo` | `{success:true, mode:"demo"}` |
+| `VoiceNotifier.notify` | `VOICE_FORCE_DEMO` truthy (`1/true/yes/on`) | `demo` | `{success:true, mode:"demo", message:string, reason:"forced_demo_mode"}` |
+| `VoiceNotifier._make_call` | Missing one or more of `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` | `demo` | `{success:true, mode:"demo", message:string, reason:"twilio_not_configured"}` |
 | `VoiceNotifier._make_call` | Twilio call succeeds | `live` | `{success:true, mode:"live", call_sid:string}` |
-| `VoiceNotifier._make_call` | Twilio call raises exception | `failed` | `{success:false, mode:"failed", error:string}` |
+| `VoiceNotifier._make_call` | Twilio call fails with timeout | `failed` | `{success:false, mode:"failed", error:string, reason:"twilio_timeout"}` |
+| `VoiceNotifier._make_call` | Twilio call fails without timeout | `failed` | `{success:false, mode:"failed", error:string, reason:"twilio_exception"}` |
+| `VoiceNotifier.notify` | Unexpected internal notifier exception | `failed` | `{success:false, mode:"failed", error:string, reason:"notify_exception"}` |
 | `routes/optimize._notify_with_retry` | Success on retry attempt > 1 | same mode as success result | Adds `retry_attempt` |
+
+Timeout/error semantics:
+
+- `VOICE_NOTIFY_TIMEOUT_SECONDS` controls Twilio HTTP timeout; default `20.0` seconds.
+- Invalid timeout config falls back to default and logs `reason:"invalid_timeout_config"`.
+- Notifier logs are structured with `event`, `mode`, `reason`, `service/source`, `timeout_seconds`, redacted phone, and `exception_type` on failures.
+- Raw full phone number is not logged.
 
 ## Frontend Consumer Mapping
 
@@ -366,7 +371,7 @@ Route-level error semantics for `/api/classify`:
 |---|---|---|---|
 | D-001 | P0 | `/api/accept-route` `notifications[]` entries omit `eta_minutes`, but `NotificationOverlay` renders `n.eta_minutes`. UI displays `undefined` ETA for backend responses. | `backend/routes/optimize.py::accept_route`, `frontend/src/components/shared/NotificationOverlay.jsx` |
 | D-002 | P1 | `/api/accept-route` notification entries are heterogeneous for `household`/`phone`. `duplicate_stop` and `not_found` skips omit both fields; claimed/already-claimed/completed include them. | `backend/routes/optimize.py::accept_route` |
-| D-003 | P1 | `mode:"demo"` has two valid payload variants (with and without `message`). Frontend and typed clients must treat this as a union, not a single object shape. | `backend/services/voice.py::notify`, `backend/services/voice.py::_make_call` |
+| D-003 | P1 | **Schema delta in PH4-SOHAM-01**: `mode:"demo"` is now standardized to always include `message` + `reason`; `mode:"failed"` now includes required `reason`. Migration: typed clients can remove old demo-no-message branch and must accept `reason` on failed/demo. | `backend/services/voice.py::notify`, `backend/services/voice.py::_make_call` |
 | D-004 | P2 | `/api/optimize-route` success payload does not include `success:true`, while many other routes use explicit success/error envelopes. | `backend/routes/optimize.py::optimize_route`, `backend/utils/http.py` |
 | D-005 | P2 | Several summary fields are documented as numeric values but may serialize as integer tokens in zero-value cases (Python `round(sum(...), n)` behavior). | `backend/services/optimizer.py::_build_summary` |
 
@@ -374,6 +379,5 @@ Route-level error semantics for `/api/classify`:
 
 - `[P0]` Add `eta_minutes` to each `notifications[]` entry in `/api/accept-route` using stop ETA already present in input payload.
 - `[P1]` Normalize `notifications[]` entry envelope so `household` and `phone` are always present (or formally nullable) across all skip/success reasons.
-- `[P1]` Normalize `mode:"demo"` response shape by always including `message` (empty or synthetic) so clients do not branch on field existence.
 - `[P2]` Decide whether `/api/optimize-route` should adopt the shared `{success:true,...}` envelope for consistency.
 - `[P2]` Coerce summary numeric outputs to explicit float serialization where required by strict contract tooling.

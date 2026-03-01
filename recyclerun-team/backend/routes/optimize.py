@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _notify_with_retry(phone: str, household_name: str, eta_minutes: int, driver_name: str, attempts: int = 2) -> Tuple[Dict, int]:
-    last_result: Dict = {"success": False, "mode": "failed", "error": "unknown"}
+    last_result: Dict = {"success": False, "mode": "failed", "error": "unknown", "reason": "unknown_failure"}
     for attempt in range(1, attempts + 1):
         result = notifier.notify(
             phone=phone,
