@@ -52,6 +52,7 @@ export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truc
   const totalLbs = route.reduce((a, s) => a + s.total_lbs, 0);
   const estMinutes = Math.round(route.reduce((a, s) => a + s.travel_minutes + STOP_TIME, 0));
   const hrs = Math.max(estMinutes / 60, 1e-6);
+  const fillPct = truckCapacityLbs > 0 ? (totalLbs / truckCapacityLbs) * 100 : 0;
   return {
     stops: route,
     summary: {
@@ -59,7 +60,7 @@ export function optimizeRoute({ driverLat, driverLng, listings, maxMinutes, truc
       total_value: Math.round(route.reduce((a, s) => a + s.total_value, 0) * 100) / 100,
       total_lbs: Math.round(totalLbs * 10) / 10,
       total_miles: Math.round(route.reduce((a, s) => a + s.distance_from_prev, 0) * 10) / 10,
-      truck_fill_pct: Math.round((totalLbs / truckCapacityLbs) * 1000) / 10,
+      truck_fill_pct: Math.round(fillPct * 10) / 10,
       estimated_minutes: estMinutes,
       lbs_per_hour: Math.round((totalLbs / hrs) * 10) / 10,
       objective: objective === 'lbs' ? 'lbs' : 'value',

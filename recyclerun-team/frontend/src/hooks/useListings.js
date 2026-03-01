@@ -16,6 +16,7 @@ export function useListings() {
     if (response?.ok && Array.isArray(response?.data?.listings)) {
       setListings(response.data.listings);
     } else {
+      // Keep driver view usable when backend is down.
       setListings(DEMO_LISTINGS);
     }
     setLoading(false);
