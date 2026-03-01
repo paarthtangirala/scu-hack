@@ -1,32 +1,90 @@
 import { API_BASE_URL } from "../config";
 
+const REQUEST_TIMEOUT_MS = 30000;
+
+function firstBackendErrorMessage(data) {
+  const errors = Array.isArray(data?.errors) ? data.errors : [];
+  if (!errors.length) return "";
+  const message = errors[0]?.message;
+  return typeof message === "string" ? message : "";
+}
+
+function formatServerError(status, data) {
+  const base = data?.message || data?.error || `HTTP ${status}`;
+  const detail = firstBackendErrorMessage(data);
+  return detail ? `${base}: ${detail}` : base;
+}
+
+function formatNetworkError(path, error) {
+  if (error?.name === "AbortError") {
+    return {
+      code: "timeout",
+      hint: "Request timed out. Check backend/tunnel health and retry.",
+      message: `Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s for ${path}.`,
+    };
+  }
+
+  const rawMessage = String(error?.message || "").toLowerCase();
+  const unreachable =
+    rawMessage.includes("network request failed") ||
+    rawMessage.includes("failed to fetch") ||
+    rawMessage.includes("load failed");
+  if (unreachable) {
+    return {
+      code: "network_unreachable",
+      hint: "Cannot reach API. Confirm backend is running and API URL/tunnel is valid.",
+      message: `Cannot reach backend for ${path}.`,
+    };
+  }
+
+  return {
+    code: "network_error",
+    hint: "Unexpected network error. Retry once, then verify API base URL and backend logs.",
+    message: `Network error for ${path}: ${error?.message || "Unknown error"}`,
+  };
+}
+
 async function request(path, options = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const url = `${API_BASE_URL}${path}`;
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(url, {
       headers: { "Content-Type": "application/json" },
       ...options,
       signal: controller.signal,
     });
-    const data = await response.json().catch(() => ({}));
+    const text = await response.text();
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
+    }
 
     if (!response.ok) {
       return {
         ok: false,
         status: response.status,
-        error: data?.message || "Request failed",
+        code: "server_error",
+        hint: "Server rejected the request. Review input fields and try again.",
+        error: formatServerError(response.status, data),
         data,
       };
     }
 
     return { ok: true, status: response.status, data };
   } catch (error) {
+    const network = formatNetworkError(path, error);
     return {
       ok: false,
       status: 0,
-      error: error?.message || "Network error",
+      code: network.code,
+      hint: network.hint,
+      error: network.message,
       data: null,
     };
   } finally {

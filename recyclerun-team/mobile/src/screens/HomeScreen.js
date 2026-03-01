@@ -7,12 +7,17 @@ import { API_BASE_URL } from "../config";
 export function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [health, setHealth] = useState(null);
+  const [errorMessage, setErrorMessage] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     const response = await api.health();
     if (response.ok) {
       setHealth(response.data);
+      setErrorMessage("");
+    } else {
+      const hint = response?.hint ? ` ${response.hint}` : "";
+      setErrorMessage(`Health check failed: ${response?.error || "Unknown error"}${hint}`);
     }
     setLoading(false);
   }, []);
@@ -38,6 +43,7 @@ export function HomeScreen() {
           <StatPill label="Seed Listings" value={String(health?.seeded_listings || 0)} />
           <StatPill label="Total Listings" value={String(health?.total_listings || 0)} />
         </View>
+        {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
         <Text style={styles.muted}>API base: {API_BASE_URL}</Text>
       </Card>
 
@@ -71,6 +77,11 @@ const styles = StyleSheet.create({
   muted: {
     color: colors.muted,
     fontSize: 12,
+  },
+  error: {
+    color: "#9B2C2C",
+    fontSize: 12,
+    marginBottom: 8,
   },
   sectionItemTitle: {
     fontSize: 15,

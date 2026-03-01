@@ -21,6 +21,11 @@ function randomLatLng() {
   };
 }
 
+function formatApiFailure(action, response) {
+  const hint = response?.hint ? ` ${response.hint}` : "";
+  return `${action} failed: ${response?.error || "Request failed"}${hint}`;
+}
+
 export function PostScreen() {
   const [materials, setMaterials] = useState(FALLBACK_MATERIALS);
   const [form, setForm] = useState({
@@ -49,6 +54,8 @@ export function PostScreen() {
       if (keys.length && !keys.includes(manualType)) {
         setManualType(keys[0]);
       }
+    } else {
+      setMessage(formatApiFailure("Load materials", response));
     }
   }, [manualType]);
 
@@ -95,7 +102,7 @@ export function PostScreen() {
 
     const classify = await api.classifyImage(asset.base64 || "");
     if (!classify.ok) {
-      setMessage(`Classify failed: ${classify.error}`);
+      setMessage(formatApiFailure("Classify", classify));
       setAiMaterials([]);
     } else {
       setAiMaterials(classify.data?.materials || []);
@@ -131,7 +138,7 @@ export function PostScreen() {
     setLoadingSubmit(false);
 
     if (!response.ok) {
-      setMessage(`Post failed: ${response.error}`);
+      setMessage(formatApiFailure("Post", response));
       return;
     }
 

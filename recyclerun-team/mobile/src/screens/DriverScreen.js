@@ -22,6 +22,11 @@ function nextRequestId() {
   return `mobile-accept-${Date.now()}`;
 }
 
+function formatApiFailure(action, response) {
+  const hint = response?.hint ? ` ${response.hint}` : "";
+  return `${action} failed: ${response?.error || "Request failed"}${hint}`;
+}
+
 export function DriverScreen() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -43,7 +48,7 @@ export function DriverScreen() {
       setListings(response.data?.listings || []);
       return;
     }
-    setMessage(`Load listings failed: ${response.error}`);
+    setMessage(formatApiFailure("Load listings", response));
   }, []);
 
   const refresh = useCallback(async () => {
@@ -68,7 +73,7 @@ export function DriverScreen() {
     });
     setLoading(false);
     if (!response.ok) {
-      setMessage(`Optimize failed: ${response.error}`);
+      setMessage(formatApiFailure("Optimize", response));
       return;
     }
     setRoute(response.data);
@@ -93,7 +98,7 @@ export function DriverScreen() {
     });
     setLoading(false);
     if (!response.ok) {
-      setMessage(`Accept failed: ${response.error}`);
+      setMessage(formatApiFailure("Accept route", response));
       return;
     }
     setAccepted(true);
@@ -111,7 +116,7 @@ export function DriverScreen() {
     }
     const response = await api.completeListing(listingId);
     if (!response.ok) {
-      setMessage(`Complete stop failed: ${response.error}`);
+      setMessage(formatApiFailure("Complete stop", response));
       return;
     }
     setCompletedIds((prev) => ({ ...prev, [listingId]: true }));
@@ -198,7 +203,11 @@ export function DriverScreen() {
             disabled={loading || !route?.stops?.length}
           />
           <SecondaryButton title="Reset Demo" onPress={async () => {
-            await api.resetDemo();
+            const reset = await api.resetDemo();
+            if (!reset.ok) {
+              setMessage(formatApiFailure("Reset demo", reset));
+              return;
+            }
             await refresh();
             setRoute(null);
             setAccepted(false);
