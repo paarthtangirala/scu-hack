@@ -1,5 +1,5 @@
 /** Owner: Anisha */
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { RouteBanner } from '../components/driver/RouteBanner';
 import { StopCard } from '../components/driver/StopCard';
 import { TruckMeter } from '../components/driver/TruckMeter';
@@ -7,6 +7,37 @@ import { NotificationOverlay } from '../components/shared/NotificationOverlay';
 import { useListings } from '../hooks/useListings';
 import { useRoute } from '../hooks/useRoute';
 import { DEMO_LISTINGS, MATERIAL_RATES } from '../services/demoData';
+import { buildDriverMapModel, DEFAULT_DRIVER_CENTER } from '../services/mapPipeline';
+
+const MAP_WIDTH = 1000;
+const MAP_HEIGHT = 380;
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function computeViewport(points, center) {
+  const safePoints = Array.isArray(points) ? points : [];
+  const maxLatDelta = safePoints.reduce((max, p) => Math.max(max, Math.abs(p.lat - center.lat)), 0);
+  const maxLngDelta = safePoints.reduce((max, p) => Math.max(max, Math.abs(p.lng - center.lng)), 0);
+  return {
+    latSpan: Math.max(0.02, maxLatDelta * 2.4, 0.04),
+    lngSpan: Math.max(0.02, maxLngDelta * 2.4, 0.04),
+  };
+}
+
+function projectToCanvas(point, center, viewport) {
+  const minLat = center.lat - viewport.latSpan / 2;
+  const maxLat = center.lat + viewport.latSpan / 2;
+  const minLng = center.lng - viewport.lngSpan / 2;
+  const maxLng = center.lng + viewport.lngSpan / 2;
+  const x = ((point.lng - minLng) / Math.max(maxLng - minLng, 1e-9)) * MAP_WIDTH;
+  const y = ((maxLat - point.lat) / Math.max(maxLat - minLat, 1e-9)) * MAP_HEIGHT;
+  return {
+    x: clamp(x, 8, MAP_WIDTH - 8),
+    y: clamp(y, 8, MAP_HEIGHT - 8),
+  };
+}
 
 export function DriverPage({ onToast }) {
   const { listings } = useListings();
@@ -19,6 +50,8 @@ export function DriverPage({ onToast }) {
   const [collectedLbs, setCollectedLbs] = useState(0);
   const [earnedDollars, setEarnedDollars] = useState(0);
   const [showNotif, setShowNotif] = useState(false);
+  const [selectedStopIndex, setSelectedStopIndex] = useState(null);
+  const stopCardRefs = useRef([]);
 
   async function handleBuild() {
     await build({ lat: 37.3541, lng: -121.9552, maxMinutes: maxMin, truckCapacity: capacity, objective });
@@ -43,10 +76,70 @@ export function DriverPage({ onToast }) {
   }
 
   function handleReset() {
-    reset(); setCompleted(new Set()); setCollectedLbs(0); setEarnedDollars(0);
+    reset(); setCompleted(new Set()); setCollectedLbs(0); setEarnedDollars(0); setSelectedStopIndex(null);
+  }
+
+  function handleStopCardSelect(index) {
+    setSelectedStopIndex(index);
+  }
+
+  function handleMapStopSelect(index) {
+    setSelectedStopIndex(index);
+    const node = stopCardRefs.current[index];
+    if (node && typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
   }
 
   const displayListings = listings.length ? listings : DEMO_LISTINGS;
+  const mapModel = useMemo(
+    () => buildDriverMapModel({
+      listings: displayListings,
+      route,
+      selectedStopIndex,
+      fallbackCenter: DEFAULT_DRIVER_CENTER,
+    }),
+    [displayListings, route, selectedStopIndex]
+  );
+  const mapPoints = useMemo(
+    () => [...mapModel.listingMarkers, ...mapModel.stopMarkers],
+    [mapModel]
+  );
+  const viewport = useMemo(
+    () => computeViewport(mapPoints, mapModel.center),
+    [mapPoints, mapModel.center]
+  );
+  const projectedListingMarkers = useMemo(
+    () => mapModel.listingMarkers.map((marker) => ({
+      ...marker,
+      ...projectToCanvas(marker, mapModel.center, viewport),
+    })),
+    [mapModel.listingMarkers, mapModel.center, viewport]
+  );
+  const projectedStopMarkers = useMemo(
+    () => mapModel.stopMarkers.map((marker) => ({
+      ...marker,
+      ...projectToCanvas(marker, mapModel.center, viewport),
+    })),
+    [mapModel.stopMarkers, mapModel.center, viewport]
+  );
+  const polylinePoints = useMemo(
+    () => mapModel.polyline
+      .map((point) => projectToCanvas(point, mapModel.center, viewport))
+      .map((point) => `${point.x},${point.y}`)
+      .join(' '),
+    [mapModel.polyline, mapModel.center, viewport]
+  );
+
+  useEffect(() => {
+    if (!route?.stops?.length) {
+      if (selectedStopIndex !== null) setSelectedStopIndex(null);
+      return;
+    }
+    if (selectedStopIndex === null || selectedStopIndex >= route.stops.length) {
+      setSelectedStopIndex(0);
+    }
+  }, [route, selectedStopIndex]);
 
   return (
     <div className="content-area">
@@ -76,6 +169,103 @@ export function DriverPage({ onToast }) {
         {loading ? '⚡ Optimizing...' : '⚡ Build Optimized Route'}
       </button>
 
+      <div className="card" style={{ marginBottom:'1rem', padding:'1rem' }}>
+        <div className="section-label" style={{ marginBottom:'0.65rem' }}>
+          DRIVER MAP — LISTINGS, ROUTE, AND STOP SYNC
+        </div>
+        <div style={{
+          position:'relative',
+          border:'1px solid var(--border)',
+          borderRadius:'14px',
+          height:'380px',
+          background:'linear-gradient(180deg, rgba(10,16,11,0.95) 0%, rgba(14,24,16,0.92) 100%)',
+          overflow:'hidden',
+        }}>
+          <svg viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} width="100%" height="100%" style={{ position:'absolute', inset:0 }}>
+            <defs>
+              <pattern id="driver-map-grid" width="60" height="60" patternUnits="userSpaceOnUse">
+                <path d="M 60 0 L 0 0 0 60" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+              </pattern>
+            </defs>
+            <rect x="0" y="0" width={MAP_WIDTH} height={MAP_HEIGHT} fill="url(#driver-map-grid)" />
+            {polylinePoints && (
+              <polyline
+                points={polylinePoints}
+                fill="none"
+                stroke="rgba(0,232,122,0.95)"
+                strokeWidth="4"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            )}
+          </svg>
+
+          {projectedListingMarkers.map((marker) => (
+            <div
+              key={`listing-${marker.id}`}
+              title={`${marker.label} (${marker.listing_kind})`}
+              style={{
+                position:'absolute',
+                left:`${(marker.x / MAP_WIDTH) * 100}%`,
+                top:`${(marker.y / MAP_HEIGHT) * 100}%`,
+                transform:'translate(-50%, -50%)',
+                width:'22px',
+                height:'22px',
+                borderRadius: marker.iconType === 'business' ? '6px' : '50%',
+                border:'1px solid rgba(255,255,255,0.28)',
+                background: marker.iconType === 'business' ? 'rgba(255,180,0,0.92)' : 'rgba(0,232,122,0.92)',
+                color:'#09120d',
+                display:'flex',
+                alignItems:'center',
+                justifyContent:'center',
+                fontSize:'0.73rem',
+                fontWeight:700,
+                zIndex:4,
+              }}
+            >
+              {marker.iconType === 'business' ? 'B' : 'H'}
+            </div>
+          ))}
+
+          {projectedStopMarkers.map((marker) => (
+            <button
+              key={`stop-${marker.id}`}
+              onClick={() => handleMapStopSelect(marker.index)}
+              title={`Stop ${marker.orderNumber} — ${marker.address}`}
+              style={{
+                position:'absolute',
+                left:`${(marker.x / MAP_WIDTH) * 100}%`,
+                top:`${(marker.y / MAP_HEIGHT) * 100}%`,
+                transform:'translate(-50%, -50%)',
+                width:'28px',
+                height:'28px',
+                borderRadius:'50%',
+                border: marker.isSelected ? '2px solid var(--amber)' : '2px solid rgba(255,255,255,0.75)',
+                background: marker.isSelected ? 'var(--amber)' : 'rgba(17,26,19,0.95)',
+                color: marker.isSelected ? '#1f1200' : '#ffffff',
+                fontWeight:800,
+                fontSize:'0.8rem',
+                cursor:'pointer',
+                zIndex:6,
+              }}
+            >
+              {marker.orderNumber}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:'0.6rem', marginTop:'0.6rem', flexWrap:'wrap' }}>
+          <span style={{ fontFamily:'var(--mono)', fontSize:'0.74rem', color:'var(--muted)' }}>
+            H pin = household listing, B pin = business listing
+          </span>
+          <span style={{ fontFamily:'var(--mono)', fontSize:'0.74rem', color:'var(--muted)' }}>
+            Focus: {mapModel.selectedStopIndex === null ? 'Map center' : `Stop ${mapModel.selectedStopIndex + 1}`}
+          </span>
+          <span style={{ fontFamily:'var(--mono)', fontSize:'0.74rem', color:'var(--muted)' }}>
+            Pins: {mapModel.listingMarkers.length} listings · {mapModel.stopMarkers.length} route stops
+          </span>
+        </div>
+      </div>
+
       {route && <RouteBanner summary={route.summary} onAccept={handleAccept} accepting={loading} />}
 
       {route && accepted && (
@@ -89,8 +279,22 @@ export function DriverPage({ onToast }) {
           </div>
           <div className="stop-list">
             {route.stops.map((stop, i) => (
-              <StopCard key={stop.id || stop.listing_id} stop={stop} index={i}
-                completed={completed.has(stop.id || stop.listing_id)} onComplete={handleComplete} />
+              <div
+                key={stop.id || stop.listing_id}
+                ref={(node) => { stopCardRefs.current[i] = node; }}
+                onClick={() => handleStopCardSelect(i)}
+                style={{
+                  borderRadius:'12px',
+                  boxShadow: selectedStopIndex === i ? '0 0 0 2px rgba(255,184,0,0.45)' : 'none',
+                }}
+              >
+                <StopCard
+                  stop={stop}
+                  index={i}
+                  completed={completed.has(stop.id || stop.listing_id)}
+                  onComplete={handleComplete}
+                />
+              </div>
             ))}
           </div>
           <button className="btn btn-secondary btn-full mt-2" onClick={handleReset}>↺ Reset & New Route</button>

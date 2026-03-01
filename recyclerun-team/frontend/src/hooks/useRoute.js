@@ -4,8 +4,8 @@
  */
 import { useState } from 'react';
 import { api } from '../services/api';
-import { optimizeRoute } from '../utils/optimizer';
 import { DEMO_LISTINGS } from '../services/demoData';
+import { resolveOptimizedRoute } from '../services/mapPipeline';
 
 export function useRoute(listings) {
   const [route, setRoute] = useState(null);
@@ -15,23 +15,27 @@ export function useRoute(listings) {
 
   const build = async ({ lat, lng, maxMinutes, truckCapacity, objective }) => {
     setLoading(true);
-    const data = await api.optimizeRoute({ lat, lng, maxMinutes, truckCapacity, objective });
-    if (data?.stops) {
-      setRoute(data);
-    } else {
-      // client-side fallback
-      setRoute(optimizeRoute({ driverLat: lat, driverLng: lng,
-        listings: listings.length ? listings : DEMO_LISTINGS,
-        maxMinutes, truckCapacityLbs: truckCapacity, objective }));
-    }
+    const { route: nextRoute } = await resolveOptimizedRoute({
+      lat,
+      lng,
+      maxMinutes,
+      truckCapacity,
+      objective,
+      listings,
+      fallbackListings: DEMO_LISTINGS,
+    });
+    setRoute(nextRoute);
     setLoading(false);
   };
 
   const accept = async (driverName) => {
     if (!route) return;
     setLoading(true);
-    const data = await api.acceptRoute({ stops: route.stops, driverName });
-    setNotifications(data?.notifications || route.stops.map((s, i) => ({
+    const response = await api.acceptRoute({ stops: route.stops, driverName });
+    const backendNotifications = response?.ok && Array.isArray(response?.data?.notifications)
+      ? response.data.notifications
+      : null;
+    setNotifications(backendNotifications || route.stops.map((s) => ({
       household: s.household_name, eta_minutes: s.eta_minutes,
       notification: { mode: 'demo', message: `${driverName} arriving in ${s.eta_minutes} min` }
     })));
