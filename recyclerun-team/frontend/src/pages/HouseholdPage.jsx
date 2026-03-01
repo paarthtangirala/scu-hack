@@ -4,14 +4,19 @@ import { PhotoUpload } from '../components/household/PhotoUpload';
 import { ManualMaterials } from '../components/household/ManualMaterials';
 import { api } from '../services/api';
 import { buildListingPayload } from '../services/uploadPipeline';
+import { runSafeAsync } from '../services/stabilization';
 
 export function HouseholdPage({ onToast }) {
   const [aiMaterials, setAiMaterials] = useState([]);
   const [manualMats, setManualMats] = useState([]);
-  const [form, setForm] = useState({ listing_kind:'household', name:'', address:'', phone:'', notes:'' });
+  const [form, setForm] = useState({ listing_kind: 'household', name: '', address: '', phone: '', notes: '' });
 
   async function post() {
-    if (!form.name || !form.address) { onToast('⚠️ Please enter name and address'); return; }
+    if (!form.name || !form.address) {
+      onToast?.('⚠️ Please enter name and address');
+      return;
+    }
+
     const lat = 37.3541 + (Math.random() - 0.5) * 0.05;
     const lng = -121.9552 + (Math.random() - 0.5) * 0.05;
     const payload = buildListingPayload({
@@ -21,14 +26,26 @@ export function HouseholdPage({ onToast }) {
       lat,
       lng,
     });
-    if (!payload.materials.length) { onToast('⚠️ Add at least one material'); return; }
-    const res = await api.createListing(payload);
-    if (!res?.ok) {
-      onToast(`⚠️ ${res?.error || 'Unable to post listing'}`);
+
+    if (!payload.materials.length) {
+      onToast?.('⚠️ Add at least one material');
       return;
     }
-    onToast('✅ Listing posted! Drivers nearby have been notified.');
-    setForm({ listing_kind:'household', name:'', address:'', phone:'', notes:'' }); setAiMaterials([]); setManualMats([]);
+
+    const res = await runSafeAsync(
+      () => api.createListing(payload),
+      { ok: false, status: 0, error: 'Unable to post listing' }
+    );
+
+    if (!res?.ok) {
+      onToast?.(`⚠️ ${res?.error || 'Unable to post listing'}`);
+      return;
+    }
+
+    onToast?.('✅ Listing posted! Drivers nearby have been notified.');
+    setForm({ listing_kind: 'household', name: '', address: '', phone: '', notes: '' });
+    setAiMaterials([]);
+    setManualMats([]);
   }
 
   return (
@@ -50,15 +67,15 @@ export function HouseholdPage({ onToast }) {
                 <option value="business">Small business</option>
               </select>
             </div>
-            {['name','address','phone','notes'].map(field => (
+            {['name', 'address', 'phone', 'notes'].map(field => (
               <div className="form-group" key={field}>
                 <label>{field.toUpperCase()}</label>
                 {field === 'notes'
-                  ? <textarea rows={3} value={form[field]} onChange={e => setForm({...form,[field]:e.target.value})} />
-                  : <input type="text" value={form[field]} onChange={e => setForm({...form,[field]:e.target.value})} />}
+                  ? <textarea rows={3} value={form[field]} onChange={e => setForm({ ...form, [field]: e.target.value })} />
+                  : <input type="text" value={form[field]} onChange={e => setForm({ ...form, [field]: e.target.value })} />}
               </div>
             ))}
-            <div className="section-label" style={{ marginBottom:'0.75rem' }}>OR ADD MATERIALS MANUALLY</div>
+            <div className="section-label" style={{ marginBottom: '0.75rem' }}>OR ADD MATERIALS MANUALLY</div>
             <ManualMaterials onChange={setManualMats} />
             <button className="btn btn-primary btn-lg btn-full" onClick={post}>🚀 Post Listing to Map</button>
           </div>

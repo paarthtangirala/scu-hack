@@ -16,6 +16,17 @@ import {
   shouldSkipStopCompletion,
   summarizeRouteCompletion,
 } from '../services/stopCompletion';
+import {
+  getResponsiveLayout,
+  normalizeAcceptSummary,
+  normalizeImpactSnapshot,
+  normalizeListingsForRender,
+  normalizeNotificationsForRender,
+  normalizeRouteForRender,
+  normalizeRouteStopsForRender,
+  runSafeAsync,
+  safeNumber,
+} from '../services/stabilization';
 
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 380;
@@ -62,28 +73,89 @@ export function DriverPage({ onToast }) {
   const [impactSnapshot, setImpactSnapshot] = useState(null);
   const [showNotif, setShowNotif] = useState(false);
   const [selectedStopIndex, setSelectedStopIndex] = useState(null);
+  const [viewportWidth, setViewportWidth] = useState(() => (
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  ));
   const stopCardRefs = useRef([]);
   const completingRef = useRef(new Set());
+  const mountedRef = useRef(true);
+
+  const responsive = useMemo(() => getResponsiveLayout(viewportWidth), [viewportWidth]);
+  const demoListings = useMemo(() => normalizeListingsForRender(DEMO_LISTINGS), []);
+  const normalizedListings = useMemo(() => normalizeListingsForRender(listings), [listings]);
+  const displayListings = normalizedListings.length ? normalizedListings : demoListings;
+  const safeRoute = useMemo(() => normalizeRouteForRender(route), [route]);
+  const safeNotifications = useMemo(() => normalizeNotificationsForRender(notifications), [notifications]);
+  const safeAcceptSummary = useMemo(() => normalizeAcceptSummary(acceptSummary), [acceptSummary]);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      if (mountedRef.current) {
+        setViewportWidth(window.innerWidth);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  function pushToast(message) {
+    onToast?.(message);
+  }
 
   async function handleBuild() {
-    await build({ lat: 37.3541, lng: -121.9552, maxMinutes: maxMin, truckCapacity: capacity, objective });
-  }
+    const response = await runSafeAsync(
+      () => build({ lat: 37.3541, lng: -121.9552, maxMinutes: maxMin, truckCapacity: capacity, objective }),
+      { route: null, source: 'error' }
+    );
 
-  async function handleAccept() {
-    await accept(driverName);
-    setShowNotif(true);
-  }
-
-  async function refreshImpactSnapshot() {
-    const response = await api.getImpact();
-    if (response?.ok && response?.data) {
-      setImpactSnapshot(response.data);
+    if (!response?.route) {
+      pushToast('⚠️ Unable to build route. Please retry.');
     }
   }
 
+  async function handleAccept() {
+    const response = await runSafeAsync(
+      () => accept(driverName),
+      { ok: false, error: 'Unable to accept route', status: 0 }
+    );
+
+    if (mountedRef.current) {
+      setShowNotif(true);
+    }
+    if (!response?.ok) {
+      pushToast(`⚠️ ${response?.error || 'Route accepted in demo mode only'}`);
+    }
+  }
+
+  async function refreshImpactSnapshot() {
+    const response = await runSafeAsync(
+      () => api.getImpact(),
+      { ok: false, status: 0, error: 'Unable to load impact snapshot' }
+    );
+
+    if (response?.ok && response?.data) {
+      const safeSnapshot = normalizeImpactSnapshot(response.data);
+      if (mountedRef.current) {
+        setImpactSnapshot(safeSnapshot);
+      }
+    }
+
+    return response;
+  }
+
   async function handleComplete(stop) {
+    const safeStop = normalizeRouteStopsForRender([stop])[0];
+    if (!safeStop) {
+      return;
+    }
+
     const guard = shouldSkipStopCompletion({
-      stop,
+      stop: safeStop,
       completedIds: completed,
       inFlightIds: completingRef.current,
     });
@@ -91,49 +163,66 @@ export function DriverPage({ onToast }) {
 
     const key = guard.key;
     completingRef.current.add(key);
-    setCompleting(new Set(completingRef.current));
-
-    const result = await completeStopPersisted({
-      stop,
-      completedIds: completed,
-      inFlightIds: completingRef.current,
-    });
-    if (!result.ok) {
-      setCompletionErrors((prev) => ({ ...prev, [key]: result.error || 'Failed to mark stop complete' }));
-      onToast(`⚠️ Could not complete stop (${key}): ${result.error || 'Unknown error'}`);
-      completingRef.current.delete(key);
+    if (mountedRef.current) {
       setCompleting(new Set(completingRef.current));
-      return;
     }
 
-    const next = applyCompletionSuccess(
-      { completedIds: completed, collectedLbs, earnedDollars },
-      stop
-    );
-    if (next.changed) {
-      setCompleted(next.completedIds);
-      setCollectedLbs(next.collectedLbs);
-      setEarnedDollars(next.earnedDollars);
-      setCompletionErrors((prev) => {
-        if (!prev[key]) return prev;
-        const cloned = { ...prev };
-        delete cloned[key];
-        return cloned;
-      });
+    try {
+      const result = await runSafeAsync(
+        () => completeStopPersisted({
+          stop: safeStop,
+          completedIds: completed,
+          inFlightIds: completingRef.current,
+        }),
+        { ok: false, error: 'Failed to mark stop complete', status: 0 }
+      );
+
+      if (!result?.ok) {
+        if (mountedRef.current) {
+          setCompletionErrors((prev) => ({ ...prev, [key]: result?.error || 'Failed to mark stop complete' }));
+        }
+        pushToast(`⚠️ Could not complete stop (${key}): ${result?.error || 'Unknown error'}`);
+        return;
+      }
+
+      const next = applyCompletionSuccess(
+        { completedIds: completed, collectedLbs, earnedDollars },
+        safeStop
+      );
+      if (next.changed && mountedRef.current) {
+        setCompleted(next.completedIds);
+        setCollectedLbs(next.collectedLbs);
+        setEarnedDollars(next.earnedDollars);
+        setCompletionErrors((prev) => {
+          if (!prev[key]) return prev;
+          const cloned = { ...prev };
+          delete cloned[key];
+          return cloned;
+        });
+      }
+
+      await Promise.all([
+        runSafeAsync(() => refresh(), null),
+        runSafeAsync(() => refreshImpactSnapshot(), null),
+      ]);
+
+      const stopLbs = Number(safeNumber(safeStop.total_lbs, 0).toFixed(1));
+      const stopValue = Number(safeNumber(safeStop.total_value, 0).toFixed(2));
+      const msg = objective === 'lbs'
+        ? `✅ Stop done! +${stopLbs} lbs collected`
+        : `✅ Stop done! +$${stopValue.toFixed(2)} earned`;
+      pushToast(msg);
+    } finally {
+      completingRef.current.delete(key);
+      if (mountedRef.current) {
+        setCompleting(new Set(completingRef.current));
+      }
     }
-
-    await Promise.all([refresh(), refreshImpactSnapshot()]);
-
-    const msg = objective === 'lbs'
-      ? `✅ Stop done! +${stop.total_lbs} lbs collected`
-      : `✅ Stop done! +$${stop.total_value.toFixed(2)} earned`;
-    onToast(msg);
-    completingRef.current.delete(key);
-    setCompleting(new Set(completingRef.current));
   }
 
   function handleReset() {
     reset();
+    if (!mountedRef.current) return;
     setCompleted(new Set());
     setCompleting(new Set());
     completingRef.current = new Set();
@@ -155,19 +244,18 @@ export function DriverPage({ onToast }) {
     }
   }
 
-  const displayListings = listings.length ? listings : DEMO_LISTINGS;
   const completionSummary = useMemo(
-    () => summarizeRouteCompletion({ routeStops: route?.stops || [], completedIds: completed }),
-    [route, completed]
+    () => summarizeRouteCompletion({ routeStops: safeRoute?.stops || [], completedIds: completed }),
+    [safeRoute, completed]
   );
   const mapModel = useMemo(
     () => buildDriverMapModel({
       listings: displayListings,
-      route,
+      route: safeRoute,
       selectedStopIndex,
       fallbackCenter: DEFAULT_DRIVER_CENTER,
     }),
-    [displayListings, route, selectedStopIndex]
+    [displayListings, safeRoute, selectedStopIndex]
   );
   const mapPoints = useMemo(
     () => [...mapModel.listingMarkers, ...mapModel.stopMarkers],
@@ -200,26 +288,33 @@ export function DriverPage({ onToast }) {
   );
 
   useEffect(() => {
-    refreshImpactSnapshot();
+    void runSafeAsync(() => refreshImpactSnapshot(), null);
   }, []);
 
   useEffect(() => {
-    if (!route?.stops?.length) {
+    if (!safeRoute?.stops?.length) {
       if (selectedStopIndex !== null) setSelectedStopIndex(null);
       return;
     }
-    if (selectedStopIndex === null || selectedStopIndex >= route.stops.length) {
+    if (selectedStopIndex === null || selectedStopIndex >= safeRoute.stops.length) {
       setSelectedStopIndex(0);
     }
-  }, [route, selectedStopIndex]);
+  }, [safeRoute, selectedStopIndex]);
 
   return (
     <div className="content-area">
-      {showNotif && notifications.length > 0 && (
-        <NotificationOverlay notifications={notifications} onClose={() => setShowNotif(false)} />
+      {showNotif && safeNotifications.length > 0 && (
+        <NotificationOverlay notifications={safeNotifications} onClose={() => setShowNotif(false)} />
       )}
 
-      <div className="driver-controls">
+      <div
+        className="driver-controls"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: responsive.driver.controlColumns,
+          gap: responsive.spacing.sectionGap,
+        }}
+      >
         <div className="control-card"><div className="control-label">YOUR NAME</div>
           <input value={driverName} onChange={e => setDriverName(e.target.value)} /></div>
         <div className="control-card"><div className="control-label">OPTIMIZE FOR</div>
@@ -229,7 +324,7 @@ export function DriverPage({ onToast }) {
           </select></div>
         <div className="control-card"><div className="control-label">MAX DRIVE TIME</div>
           <select value={maxMin} onChange={e => setMaxMin(+e.target.value)}>
-            {[60,120,180,240].map(v => <option key={v} value={v}>{v/60}h</option>)}</select></div>
+            {[60, 120, 180, 240].map(v => <option key={v} value={v}>{v / 60}h</option>)}</select></div>
         <div className="control-card"><div className="control-label">TRUCK CAPACITY</div>
           <select value={capacity} onChange={e => setCapacity(+e.target.value)}>
             <option value={500}>0.5 ton</option><option value={1000}>1 ton</option><option value={2000}>2 ton</option>
@@ -237,23 +332,23 @@ export function DriverPage({ onToast }) {
       </div>
 
       <button className="btn btn-primary btn-lg btn-full" onClick={handleBuild} disabled={loading}
-        style={{ marginBottom:'1rem' }}>
+        style={{ marginBottom: '1rem' }}>
         {loading ? '⚡ Optimizing...' : '⚡ Build Optimized Route'}
       </button>
 
-      <div className="card" style={{ marginBottom:'1rem', padding:'1rem' }}>
-        <div className="section-label" style={{ marginBottom:'0.65rem' }}>
+      <div className="card" style={{ marginBottom: '1rem', padding: responsive.spacing.cardPadding }}>
+        <div className="section-label" style={{ marginBottom: '0.65rem' }}>
           DRIVER MAP — LISTINGS, ROUTE, AND STOP SYNC
         </div>
         <div style={{
-          position:'relative',
-          border:'1px solid var(--border)',
-          borderRadius:'14px',
-          height:'380px',
-          background:'linear-gradient(180deg, rgba(10,16,11,0.95) 0%, rgba(14,24,16,0.92) 100%)',
-          overflow:'hidden',
+          position: 'relative',
+          border: '1px solid var(--border)',
+          borderRadius: '14px',
+          height: `${responsive.driver.mapHeight}px`,
+          background: 'linear-gradient(180deg, rgba(10,16,11,0.95) 0%, rgba(14,24,16,0.92) 100%)',
+          overflow: 'hidden',
         }}>
-          <svg viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} width="100%" height="100%" style={{ position:'absolute', inset:0 }}>
+          <svg viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
             <defs>
               <pattern id="driver-map-grid" width="60" height="60" patternUnits="userSpaceOnUse">
                 <path d="M 60 0 L 0 0 0 60" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
@@ -277,22 +372,22 @@ export function DriverPage({ onToast }) {
               key={`listing-${marker.id}`}
               title={`${marker.label} (${marker.listing_kind})`}
               style={{
-                position:'absolute',
-                left:`${(marker.x / MAP_WIDTH) * 100}%`,
-                top:`${(marker.y / MAP_HEIGHT) * 100}%`,
-                transform:'translate(-50%, -50%)',
-                width:'22px',
-                height:'22px',
+                position: 'absolute',
+                left: `${(marker.x / MAP_WIDTH) * 100}%`,
+                top: `${(marker.y / MAP_HEIGHT) * 100}%`,
+                transform: 'translate(-50%, -50%)',
+                width: '22px',
+                height: '22px',
                 borderRadius: marker.iconType === 'business' ? '6px' : '50%',
-                border:'1px solid rgba(255,255,255,0.28)',
+                border: '1px solid rgba(255,255,255,0.28)',
                 background: marker.iconType === 'business' ? 'rgba(255,180,0,0.92)' : 'rgba(0,232,122,0.92)',
-                color:'#09120d',
-                display:'flex',
-                alignItems:'center',
-                justifyContent:'center',
-                fontSize:'0.73rem',
-                fontWeight:700,
-                zIndex:4,
+                color: '#09120d',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '0.73rem',
+                fontWeight: 700,
+                zIndex: 4,
               }}
             >
               {marker.iconType === 'business' ? 'B' : 'H'}
@@ -305,66 +400,77 @@ export function DriverPage({ onToast }) {
               onClick={() => handleMapStopSelect(marker.index)}
               title={`Stop ${marker.orderNumber} — ${marker.address}`}
               style={{
-                position:'absolute',
-                left:`${(marker.x / MAP_WIDTH) * 100}%`,
-                top:`${(marker.y / MAP_HEIGHT) * 100}%`,
-                transform:'translate(-50%, -50%)',
-                width:'28px',
-                height:'28px',
-                borderRadius:'50%',
+                position: 'absolute',
+                left: `${(marker.x / MAP_WIDTH) * 100}%`,
+                top: `${(marker.y / MAP_HEIGHT) * 100}%`,
+                transform: 'translate(-50%, -50%)',
+                width: '28px',
+                height: '28px',
+                borderRadius: '50%',
                 border: marker.isSelected ? '2px solid var(--amber)' : '2px solid rgba(255,255,255,0.75)',
                 background: marker.isSelected ? 'var(--amber)' : 'rgba(17,26,19,0.95)',
                 color: marker.isSelected ? '#1f1200' : '#ffffff',
-                fontWeight:800,
-                fontSize:'0.8rem',
-                cursor:'pointer',
-                zIndex:6,
+                fontWeight: 800,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                zIndex: 6,
               }}
             >
               {marker.orderNumber}
             </button>
           ))}
         </div>
-        <div style={{ display:'flex', justifyContent:'space-between', gap:'0.6rem', marginTop:'0.6rem', flexWrap:'wrap' }}>
-          <span style={{ fontFamily:'var(--mono)', fontSize:'0.74rem', color:'var(--muted)' }}>
+        <div style={{
+          display: 'flex',
+          flexDirection: responsive.driver.legendDirection,
+          justifyContent: 'space-between',
+          gap: '0.6rem',
+          marginTop: '0.6rem',
+          flexWrap: 'wrap',
+        }}>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '0.74rem', color: 'var(--muted)' }}>
             H pin = household listing, B pin = business listing
           </span>
-          <span style={{ fontFamily:'var(--mono)', fontSize:'0.74rem', color:'var(--muted)' }}>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '0.74rem', color: 'var(--muted)' }}>
             Focus: {mapModel.selectedStopIndex === null ? 'Map center' : `Stop ${mapModel.selectedStopIndex + 1}`}
           </span>
-          <span style={{ fontFamily:'var(--mono)', fontSize:'0.74rem', color:'var(--muted)' }}>
+          <span style={{ fontFamily: 'var(--mono)', fontSize: '0.74rem', color: 'var(--muted)' }}>
             Pins: {mapModel.listingMarkers.length} listings · {mapModel.stopMarkers.length} route stops
           </span>
         </div>
       </div>
 
-      {route && <RouteBanner summary={route.summary} onAccept={handleAccept} accepting={loading} />}
+      {safeRoute && <RouteBanner summary={safeRoute.summary} onAccept={handleAccept} accepting={loading} />}
 
-      {route && accepted && (
+      {safeRoute && accepted && (
         <TruckMeter collectedLbs={collectedLbs} earnedDollars={earnedDollars} capacityLbs={capacity} />
       )}
 
-      {accepted && acceptSummary.failedNotificationsCount > 0 && (
-        <div className="card" style={{ marginBottom:'1rem' }}>
-          <div className="section-label" style={{ marginBottom:'0.65rem', color:'var(--amber)' }}>
+      {accepted && safeAcceptSummary.failedNotificationsCount > 0 && (
+        <div className="card" style={{ marginBottom: '1rem' }}>
+          <div className="section-label" style={{ marginBottom: '0.65rem', color: 'var(--amber)' }}>
             ACTION REQUIRED — NOTIFICATION FAILURES
           </div>
-          <div style={{ fontFamily:'var(--mono)', fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.6rem' }}>
-            Sent {acceptSummary.notificationsSent}/{acceptSummary.totalStopsRequested} notifications.
+          <div style={{ fontFamily: 'var(--mono)', fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.6rem' }}>
+            Sent {safeAcceptSummary.notificationsSent}/{safeAcceptSummary.totalStopsRequested} notifications.
             Failed stops are listed below for manual call follow-up.
           </div>
-          <div style={{ display:'grid', gap:'0.45rem' }}>
-            {acceptSummary.failedStops.map((item) => (
+          <div style={{ display: 'grid', gap: '0.45rem' }}>
+            {safeAcceptSummary.failedStops.map((item) => (
               <div key={item.listing_id} style={{
-                border:'1px solid rgba(255,184,0,0.35)',
-                borderRadius:'10px',
-                padding:'0.55rem 0.7rem',
-                background:'rgba(255,184,0,0.08)',
+                border: '1px solid rgba(255,184,0,0.35)',
+                borderRadius: '10px',
+                padding: '0.55rem 0.7rem',
+                background: 'rgba(255,184,0,0.08)',
               }}>
-                <div style={{ fontWeight:700, fontSize:'0.84rem' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.84rem' }}>
                   {item.household} {item.phone ? `· ${item.phone}` : ''}
                 </div>
-                <div style={{ fontFamily:'var(--mono)', fontSize:'0.75rem', color:'var(--muted)' }}>
+                <div style={{
+                  fontFamily: 'var(--mono)',
+                  fontSize: responsive.driver.failureRowFontSize,
+                  color: 'var(--muted)',
+                }}>
                   stop={item.listing_id} · status={item.status_code} · reason={item.reason}
                   {item.retryable ? ' · retryable' : ''}
                 </div>
@@ -374,19 +480,19 @@ export function DriverPage({ onToast }) {
         </div>
       )}
 
-      {route?.stops?.length > 0 && (
+      {safeRoute?.stops?.length > 0 && (
         <div className="mt-2">
-          <div className="section-label" style={{ marginBottom:'1rem' }}>
+          <div className="section-label" style={{ marginBottom: '1rem' }}>
             ROUTE STOPS — OPTIMIZED BY {objective === 'lbs' ? 'LBS/MIN (FASTEST FILL)' : '$/MIN'}
           </div>
           <div className="stop-list">
-            {route.stops.map((stop, i) => (
+            {safeRoute.stops.map((stop, i) => (
               <div
                 key={stop.id || stop.listing_id}
                 ref={(node) => { stopCardRefs.current[i] = node; }}
                 onClick={() => handleStopCardSelect(i)}
                 style={{
-                  borderRadius:'12px',
+                  borderRadius: '12px',
                   boxShadow: selectedStopIndex === i ? '0 0 0 2px rgba(255,184,0,0.45)' : 'none',
                   opacity: completing.has(getStopKey(stop)) ? 0.7 : 1,
                 }}
@@ -399,10 +505,10 @@ export function DriverPage({ onToast }) {
                 />
                 {completionErrors[getStopKey(stop)] && (
                   <div style={{
-                    margin:'0.35rem 0 0.2rem 0',
-                    fontFamily:'var(--mono)',
-                    fontSize:'0.72rem',
-                    color:'var(--red)',
+                    margin: '0.35rem 0 0.2rem 0',
+                    fontFamily: 'var(--mono)',
+                    fontSize: '0.72rem',
+                    color: 'var(--red)',
                   }}>
                     ⚠️ {completionErrors[getStopKey(stop)]}
                   </div>
@@ -410,7 +516,7 @@ export function DriverPage({ onToast }) {
               </div>
             ))}
           </div>
-          <div style={{ marginTop:'0.55rem', fontFamily:'var(--mono)', fontSize:'0.78rem', color:'var(--muted)' }}>
+          <div style={{ marginTop: '0.55rem', fontFamily: 'var(--mono)', fontSize: '0.78rem', color: 'var(--muted)' }}>
             Completed stops: {completionSummary.completedStops}/{completionSummary.totalStops}
             {completionSummary.allCompleted ? ' · Route complete ✅' : ''}
           </div>
@@ -419,31 +525,42 @@ export function DriverPage({ onToast }) {
       )}
 
       {impactSnapshot && (
-        <div className="card" style={{ marginTop:'1rem' }}>
-          <div className="section-label" style={{ marginBottom:'0.65rem' }}>LIVE IMPACT SNAPSHOT</div>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))', gap:'0.45rem' }}>
-            <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem' }}>completed_pickups: {impactSnapshot.completed_pickups}</div>
-            <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem' }}>total_lbs_diverted: {impactSnapshot.total_lbs_diverted}</div>
-            <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem' }}>total_value_paid: ${impactSnapshot.total_value_paid}</div>
+        <div className="card" style={{ marginTop: '1rem' }}>
+          <div className="section-label" style={{ marginBottom: '0.65rem' }}>LIVE IMPACT SNAPSHOT</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '0.45rem' }}>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>completed_pickups: {impactSnapshot.completed_pickups}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>total_lbs_diverted: {impactSnapshot.total_lbs_diverted}</div>
+            <div style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem' }}>total_value_paid: ${impactSnapshot.total_value_paid}</div>
           </div>
         </div>
       )}
 
       <div className="mt-2">
-        <div className="section-label" style={{ marginBottom:'1rem' }}>AVAILABLE LISTINGS ({displayListings.filter(l=>l.status==='available').length})</div>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:'0.75rem' }}>
+        <div className="section-label" style={{ marginBottom: '1rem' }}>
+          AVAILABLE LISTINGS ({displayListings.filter(l => l.status === 'available').length})
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(auto-fill,minmax(${responsive.driver.listingCardMinWidth}px,1fr))`,
+          gap: '0.75rem',
+        }}>
           {displayListings.filter(l => l.status === 'available').map(l => (
-            <div key={l.id} className="card" style={{ padding:'1rem' }}>
-              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'0.5rem' }}>
-                <span style={{ fontWeight:700, fontSize:'0.9rem' }}>
+            <div key={l.id} className="card" style={{ padding: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>
                   {l.listing_kind === 'business' ? `🏪 ${l.household_name}` : l.household_name}
                 </span>
-                <span style={{ fontFamily:'var(--mono)', color:'var(--green)', fontSize:'1rem' }}>${l.total_value.toFixed(2)}</span>
+                <span style={{ fontFamily: 'var(--mono)', color: 'var(--green)', fontSize: '1rem' }}>
+                  ${safeNumber(l.total_value, 0).toFixed(2)}
+                </span>
               </div>
-              <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem', color:'var(--muted)', marginBottom:'0.5rem' }}>📍 {l.address}</div>
-              <div style={{ display:'flex', gap:'0.3rem', flexWrap:'wrap' }}>
-                {(l.materials||[]).slice(0,3).map((m,i) =>
-                  <span key={i} className="tag tag-green">{MATERIAL_RATES[m.type]?.emoji||'♻️'} {m.lbs}lb</span>)}
+              <div style={{ fontFamily: 'var(--mono)', fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.5rem' }}>
+                📍 {l.address}
+              </div>
+              <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                {(l.materials || []).slice(0, 3).map((m, i) => (
+                  <span key={i} className="tag tag-green">{MATERIAL_RATES[m.type]?.emoji || '♻️'} {safeNumber(m.lbs, 0)}lb</span>
+                ))}
               </div>
             </div>
           ))}
