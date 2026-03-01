@@ -258,6 +258,8 @@ def test_parse_failure_uses_last_success_prediction_cache(monkeypatch):
 
     assert result["success"] is True
     assert result["source"] == "gemini_live"
+    assert result["from_cache"] is True
+    assert result["fallback_reason"] == "parse_failed"
     assert result["materials"][0]["type"] == "glass_bottles"
     assert result["notes"] == "cached glass bottle"
 
@@ -330,6 +332,8 @@ def test_non_200_response_log_includes_upstream_error_snippet(monkeypatch, caplo
     )
 
     assert result["source"] == "gemini_live_demo"
+    assert result["from_cache"] is False
+    assert result["fallback_reason"] == "upstream_non_200"
     records = [
         r
         for r in caplog.records

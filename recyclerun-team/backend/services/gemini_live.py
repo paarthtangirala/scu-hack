@@ -586,6 +586,8 @@ class GeminiLiveService:
             "total_lbs": 0.0,
             "total_value": 0.0,
             "notes": f"Live fallback: {reason}",
+            "fallback_reason": reason,
+            "from_cache": False,
             "stable": False,
             "latency_ms": latency_ms,
         }
@@ -604,6 +606,8 @@ class GeminiLiveService:
             "total_lbs": cached.get("total_lbs", 0.0),
             "total_value": cached.get("total_value", 0.0),
             "notes": cached.get("notes", ""),
+            "fallback_reason": reason,
+            "from_cache": True,
             "stable": stable,
             "latency_ms": latency_ms,
         }

@@ -45,6 +45,21 @@ function normalizeLiveDetectionLbs(rawLbs, rawCount) {
   return Math.round(total * 10) / 10;
 }
 
+function buildDetectionSignature(rows) {
+  const normalized = (Array.isArray(rows) ? rows : [])
+    .map((row) => {
+      const type = typeof row?.type === "string" ? row.type.trim() : "";
+      if (!type) return "";
+      const count = normalizeLiveDetectionCount(row?.count);
+      const lbs = normalizeLiveDetectionLbs(row?.lbs, count);
+      if (lbs <= 0) return "";
+      return `${type}:${count}:${lbs.toFixed(1)}`;
+    })
+    .filter(Boolean)
+    .sort();
+  return normalized.join("|");
+}
+
 export function PostScreen() {
   const [materials, setMaterials] = useState(FALLBACK_MATERIALS);
   const [form, setForm] = useState({
@@ -85,6 +100,7 @@ export function PostScreen() {
   const pendingDetectionRef = useRef(null);
   const pendingDetectionQueueRef = useRef([]);
   const scanDecisionPromptVisibleRef = useRef(false);
+  const lastPromptSignatureRef = useRef("");
 
   const materialKeys = useMemo(() => Object.keys(materials), [materials]);
   const liveFlowStage = useMemo(() => {
@@ -291,6 +307,7 @@ export function PostScreen() {
     setLatestFrameDetections([]);
     setScanDecisionPromptVisible(false);
     scanDecisionPromptVisibleRef.current = false;
+    lastPromptSignatureRef.current = "";
     frameBusyRef.current = false;
     const sessionId = liveSessionIdRef.current;
     liveSessionIdRef.current = "";
@@ -328,6 +345,8 @@ export function PostScreen() {
         }
         setAiSource(response.data?.source || "gemini_live");
         const normalizedRows = normalizeAiRows(response.data?.materials || []);
+        const detectionSignature = buildDetectionSignature(normalizedRows);
+        const fromCache = Boolean(response.data?.from_cache);
         setAiMaterials(normalizedRows);
         if (response.data?.source === "gemini_live_demo") {
           const fallbackReason = String(response.data?.notes || "")
@@ -335,6 +354,12 @@ export function PostScreen() {
             .trim();
           const detail = fallbackReason ? ` (${fallbackReason})` : "";
           setMessage(`Live AI fallback mode active${detail}. You can still add/edit materials manually.`);
+        } else if (fromCache) {
+          if (!pendingDetectionRef.current && !scanDecisionPromptVisibleRef.current) {
+            const reason = String(response.data?.fallback_reason || "").trim();
+            const detail = reason ? ` (${reason})` : "";
+            setMessage(`Live AI waiting for a fresh frame${detail}. Keep scanning.`);
+          }
         } else {
           setMessage("Live AI preview active.");
           if (
@@ -342,11 +367,16 @@ export function PostScreen() {
             !pendingDetectionRef.current &&
             !scanDecisionPromptVisibleRef.current
           ) {
+            if (detectionSignature && detectionSignature === lastPromptSignatureRef.current) {
+              setMessage("No new object change detected yet. Keep scanning.");
+              return;
+            }
             const queue = normalizedRows
               .slice()
               .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0));
             const primary = queue[0];
             if (primary?.type) {
+              lastPromptSignatureRef.current = detectionSignature;
               const remaining = queue.slice(1);
               setLatestFrameDetections(queue);
               setPendingDetection({
@@ -533,6 +563,7 @@ export function PostScreen() {
       setLatestFrameDetections([]);
       setScanDecisionPromptVisible(false);
       scanDecisionPromptVisibleRef.current = false;
+      lastPromptSignatureRef.current = "";
       setAiSource(start.data?.source_mode || "");
       await sendLiveFrame(sessionId);
       runLiveLoop(sessionId);
@@ -580,6 +611,7 @@ export function PostScreen() {
     scanDecisionPromptVisibleRef.current = false;
     setLivePausedForReview(false);
     livePausedForReviewRef.current = false;
+    lastPromptSignatureRef.current = "";
     setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
   };
 
