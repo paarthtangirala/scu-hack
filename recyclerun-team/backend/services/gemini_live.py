@@ -462,9 +462,16 @@ class GeminiLiveService:
                 obj = json.loads(candidate)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(obj, dict):
+            notes = ""
+            if isinstance(obj, list):
+                raw_materials = obj
+            elif isinstance(obj, dict):
+                notes = obj.get("notes", obj.get("summary", ""))
+                if not isinstance(notes, str):
+                    notes = str(notes)
+                raw_materials = self._extract_material_rows(obj)
+            else:
                 continue
-            raw_materials = self._extract_material_rows(obj)
             if raw_materials is None:
                 continue
 
@@ -473,15 +480,15 @@ class GeminiLiveService:
                 if not isinstance(item, dict):
                     continue
                 mat_type = self._normalize_material_type(
-                    item.get("type") or item.get("material") or item.get("material_type")
+                    item.get("type")
+                    or item.get("material")
+                    or item.get("material_type")
+                    or item.get("name")
+                    or item.get("label")
                 )
                 if mat_type not in MATERIAL_RATES:
                     continue
-                lbs_raw = item.get("lbs")
-                if lbs_raw is None:
-                    lbs_raw = item.get("weight_lbs")
-                if lbs_raw is None:
-                    lbs_raw = item.get("weight")
+                lbs_raw = self._extract_lbs(item)
                 try:
                     lbs = float(lbs_raw)
                 except (TypeError, ValueError):
@@ -489,7 +496,10 @@ class GeminiLiveService:
                 lbs = round(max(min_lbs, min(max_lbs, lbs)), 1)
                 material = Material(type=mat_type, lbs=lbs)
                 row = material.to_dict()
-                confidence = self._safe_float(item.get("confidence"), self._safe_float(item.get("score"), 0.8))
+                confidence = self._safe_float(
+                    item.get("confidence"),
+                    self._safe_float(item.get("score"), self._safe_float(item.get("probability"), 0.8)),
+                )
                 row["confidence"] = max(0.0, min(1.0, confidence))
                 raw_confidence = self._safe_float(item.get("raw_confidence"), None)
                 if raw_confidence is not None:
@@ -499,9 +509,6 @@ class GeminiLiveService:
                     row["provenance"] = provenance.strip()
                 materials.append(row)
 
-            notes = obj.get("notes", obj.get("summary", ""))
-            if not isinstance(notes, str):
-                notes = str(notes)
             return {
                 "materials": materials,
                 "total_lbs": round(sum(m["lbs"] for m in materials), 1),
@@ -512,10 +519,34 @@ class GeminiLiveService:
 
     @staticmethod
     def _extract_material_rows(obj: dict) -> list | None:
-        for key in ("materials", "recyclable_materials", "recyclables", "items"):
+        preferred_keys = ("materials", "recyclable_materials", "recyclables", "items", "detections")
+        for key in preferred_keys:
             rows = obj.get(key)
             if isinstance(rows, list):
                 return rows
+
+        if GeminiLiveService._looks_like_material_item(obj):
+            return [obj]
+
+        queue = [obj]
+        while queue:
+            current = queue.pop(0)
+            if isinstance(current, dict):
+                for key in preferred_keys:
+                    rows = current.get(key)
+                    if isinstance(rows, list):
+                        return rows
+                for value in current.values():
+                    if isinstance(value, dict):
+                        queue.append(value)
+                    elif isinstance(value, list):
+                        if GeminiLiveService._looks_like_material_rows(value):
+                            return value
+                        queue.extend(v for v in value if isinstance(v, dict))
+            elif isinstance(current, list):
+                if GeminiLiveService._looks_like_material_rows(current):
+                    return current
+                queue.extend(v for v in current if isinstance(v, dict))
         return None
 
     def _build_demo_prediction(self, *, session: GeminiLiveSession, latency_ms: int, reason: str) -> dict:
@@ -551,6 +582,10 @@ class GeminiLiveService:
         seen = set()
         out = []
         for text in inputs:
+            stripped = text.strip()
+            if stripped.startswith("[") and stripped.endswith("]") and stripped not in seen:
+                seen.add(stripped)
+                out.append(stripped)
             for candidate in GeminiLiveService._balanced_json_objects(text):
                 normalized = candidate.strip()
                 if not normalized or normalized in seen:
@@ -558,6 +593,38 @@ class GeminiLiveService:
                 seen.add(normalized)
                 out.append(normalized)
         return out
+
+    @staticmethod
+    def _looks_like_material_rows(rows: list) -> bool:
+        if not isinstance(rows, list):
+            return False
+        if not rows:
+            return False
+        return any(GeminiLiveService._looks_like_material_item(item) for item in rows if isinstance(item, dict))
+
+    @staticmethod
+    def _looks_like_material_item(item: dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        has_type = any(item.get(k) is not None for k in ("type", "material", "material_type", "name", "label"))
+        has_weight = any(
+            item.get(k) is not None
+            for k in ("lbs", "weight_lbs", "estimated_weight_lbs", "weight", "estimated_weight", "pounds", "mass_lbs")
+        )
+        return has_type and has_weight
+
+    @staticmethod
+    def _extract_lbs(item: dict):
+        for key in ("lbs", "weight_lbs", "estimated_weight_lbs", "weight", "estimated_weight", "pounds", "mass_lbs"):
+            value = item.get(key)
+            if value is not None:
+                if isinstance(value, str):
+                    token = value.strip().lower()
+                    match = re.search(r"(-?\d+(?:\.\d+)?)", token)
+                    if match:
+                        return match.group(1)
+                return value
+        return None
 
     @staticmethod
     def _balanced_json_objects(text: str) -> Iterable[str]:
