@@ -7,9 +7,10 @@ from threading import Thread
 from flask import Flask
 import pytest
 
-from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
+from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp, live_vision_bp
 import backend.routes.classify as classify_module
 import backend.routes.optimize as optimize_module
+import backend.routes.live_vision as live_vision_module
 from backend.services.store import store
 
 
@@ -20,6 +21,7 @@ def _client():
     app.register_blueprint(classify_bp)
     app.register_blueprint(optimize_bp)
     app.register_blueprint(impact_bp)
+    app.register_blueprint(live_vision_bp)
     return app.test_client()
 
 
@@ -611,3 +613,97 @@ def test_reset_demo_restores_business_seed_listings():
     listings = client.get("/api/listings?status=all").get_json()["listings"]
     business_count = len([l for l in listings if l.get("listing_kind") == "business"])
     assert business_count > 0
+
+
+def test_live_vision_session_start_and_frame_success_schema(monkeypatch):
+    client = _client()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    live_vision_module.live_service._sessions.clear()
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": '{"materials":[{"type":"cardboard","lbs":2.2,"confidence":0.9,"provenance":"frame"}],"notes":"bin"}'
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(live_vision_module.live_service, "_invoke_model", lambda **kwargs: _Resp())
+    start = client.post("/api/live-vision/session/start", json={})
+    assert start.status_code == 201
+    session_id = start.get_json()["session_id"]
+
+    frame = client.post(
+        f"/api/live-vision/session/{session_id}/frame",
+        json={"frame_base64": "aGVsbG8=", "mime_type": "image/jpeg"},
+    )
+    assert frame.status_code == 200
+    body = frame.get_json()
+    assert body["success"] is True
+    assert body["source"] == "gemini_live"
+    assert body["session_id"] == session_id
+    assert isinstance(body["frame_seq"], int)
+    assert isinstance(body["materials"], list)
+    assert isinstance(body["total_lbs"], (int, float))
+    assert isinstance(body["total_value"], (int, float))
+    assert isinstance(body["notes"], str)
+    assert isinstance(body["stable"], bool)
+    assert isinstance(body["latency_ms"], int)
+
+
+def test_live_vision_missing_api_key_starts_demo_mode(monkeypatch):
+    client = _client()
+    live_vision_module.live_service._sessions.clear()
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    start = client.post("/api/live-vision/session/start", json={"force_demo": False})
+    body = start.get_json()
+
+    assert start.status_code == 201
+    assert body["success"] is True
+    assert body["source_mode"] == "gemini_live_demo"
+    assert body["reason"] in {"gemini_api_key_missing", "forced_demo_mode"}
+
+
+def test_live_vision_frame_invalid_payload_is_structured_error():
+    client = _client()
+    live_vision_module.live_service._sessions.clear()
+    start = client.post("/api/live-vision/session/start", json={})
+    session_id = start.get_json()["session_id"]
+    resp = client.post(
+        f"/api/live-vision/session/{session_id}/frame",
+        json={"frame_base64": "not-base64", "mime_type": "image/gif"},
+    )
+    body = resp.get_json()
+
+    assert resp.status_code == 400
+    _assert_structured_error_envelope(body)
+    assert body["code"] == "validation_error"
+    fields = {d["field"] for d in body.get("details", [])}
+    assert {"frame_base64", "mime_type"}.issubset(fields)
+
+
+def test_live_vision_known_malformed_requests_never_return_500():
+    client = _client()
+    live_vision_module.live_service._sessions.clear()
+    bad_start = client.post("/api/live-vision/session/start", json="bad")
+    assert bad_start.status_code != 500
+    _assert_structured_error_envelope(bad_start.get_json())
+
+    bad_frame = client.post("/api/live-vision/session/missing_session/frame", json={"frame_base64": "aGVsbG8="})
+    assert bad_frame.status_code != 500
+    _assert_structured_error_envelope(bad_frame.get_json())
+
+    bad_health = client.get("/api/live-vision/session/missing_session/health")
+    assert bad_health.status_code != 500
+    _assert_structured_error_envelope(bad_health.get_json())

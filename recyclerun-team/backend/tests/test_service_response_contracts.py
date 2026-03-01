@@ -12,6 +12,7 @@ from backend.models.material import Material
 from backend.services.optimizer import RouteOptimizer
 from backend.services.vision import VisionClassifier
 from backend.services.voice import VoiceNotifier
+from backend.services.gemini_live import GeminiLiveService
 import backend.routes.optimize as optimize_route_module
 import backend.services.optimizer as optimizer_module
 
@@ -288,3 +289,66 @@ def test_notify_with_retry_final_failure_is_deterministic_and_contract_stable(mo
     assert result["mode"] == "failed"
     assert result["reason"] == "twilio_timeout"
     assert "retry_attempt" not in result
+
+
+def test_live_prediction_contract_shape_is_strict(monkeypatch):
+    service = GeminiLiveService()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    started = service.start_session()
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": '{"materials":[{"type":"cardboard","lbs":1.8,"confidence":0.88,"raw_confidence":0.91,"provenance":"frame"}],"notes":"preview"}'
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(service, "_invoke_model", lambda **kwargs: _Resp())
+    result = service.classify_frame(
+        session_id=started["session_id"],
+        frame_base64="aGVsbG8=",
+        mime_type="image/jpeg",
+    )
+
+    required_top = {
+        "success",
+        "source",
+        "session_id",
+        "frame_seq",
+        "materials",
+        "total_lbs",
+        "total_value",
+        "notes",
+        "stable",
+        "latency_ms",
+    }
+    assert required_top.issubset(result.keys())
+    assert result["success"] is True
+    assert result["source"] in {"gemini_live", "gemini_live_demo"}
+    assert isinstance(result["frame_seq"], int)
+    assert isinstance(result["stable"], bool)
+    assert isinstance(result["latency_ms"], int)
+    assert isinstance(result["materials"], list)
+    if result["materials"]:
+        item = result["materials"][0]
+        assert {"type", "label", "emoji", "lbs", "rate", "value", "confidence"}.issubset(item.keys())
+
+
+def test_classify_contract_backward_compatible_shape():
+    classifier = VisionClassifier()
+    demo = classifier._demo_result()
+    assert set(["success", "source", "materials", "total_value", "total_lbs", "notes"]).issubset(demo.keys())
+    assert demo["source"] == "demo"
+    assert isinstance(demo["materials"], list)

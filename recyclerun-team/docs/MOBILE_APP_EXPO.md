@@ -29,6 +29,7 @@ This auto-detects your laptop LAN IP and writes `mobile/.env` with:
 
 - `EXPO_PUBLIC_API_BASE_URL=http://<YOUR_LAN_IP>:5050/api`
 - `EXPO_PUBLIC_AUTO_LAN=1` (default): if Expo Go bundle host is a LAN IP and `.env` is stale (`loca.lt`/localhost), app auto-corrects API base at runtime.
+- `EXPO_PUBLIC_LIVE_PREVIEW_FRAME_INTERVAL_MS=1000` (default): camera frame cadence for live preview.
 
 ## 3) Start Expo
 
@@ -79,7 +80,32 @@ npm start
 5. Open **Rates** tab:
    - Material rates list loads.
 
-## 7) Common Fixes
+## 7) Live AI Preview Setup
+
+1. Add backend Gemini env values in project root `.env`:
+   - `GEMINI_API_KEY`
+   - `GEMINI_LIVE_MODEL`
+   - `GEMINI_LIVE_TIMEOUT_SECONDS`
+   - `GEMINI_LIVE_SESSION_TTL_SECONDS`
+   - `GEMINI_LIVE_MAX_FRAME_BYTES`
+   - `GEMINI_LIVE_MIN_FRAME_INTERVAL_MS`
+   - `GEMINI_LIVE_MIN_LBS`
+   - `GEMINI_LIVE_MAX_LBS`
+2. Install mobile dependency once:
+
+```bash
+cd recyclerun-team/mobile
+npm install
+```
+
+3. In **Post** tab:
+   - switch from **Photo Upload** to **Live AI Preview**
+   - grant camera permission
+   - start live preview
+4. Manual edits/add/remove lock that material type from AI overwrite.
+5. Use **Reset AI Suggestions** to clear locks and accept fresh AI autofill.
+
+## 8) Common Fixes
 
 - `Network request failed` in app:
   - Verify phone and laptop are on same Wi-Fi.
@@ -93,6 +119,12 @@ npm start
   - This usually means Expo LAN bundle transport is blocked on your network.
   - Use `npm start` (`--tunnel`) for bundle transport.
   - On iOS, ensure Expo Go has Local Network permission and disable VPN/private relay during local debugging.
+- Camera preview permission denied:
+  - Open iOS/Android settings for Expo Go and enable Camera access.
+  - Reopen Post tab and retry **Enable Camera**.
+- Live preview shows demo mode:
+  - Backend is running without valid `GEMINI_API_KEY` or upstream parse failed.
+  - Manual material entry still works and should be used as fallback.
 - Backend on macOS blocked:
   - Allow Python incoming connections in macOS firewall prompt.
 - Stale demo data:

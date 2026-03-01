@@ -44,6 +44,16 @@ function toCanonicalMaterialRow(row, rates = MATERIAL_RATES) {
   return { type, weight_lbs, estimated_value };
 }
 
+function toLockedTypeSet(lockedTypes = []) {
+  const set = new Set();
+  if (!Array.isArray(lockedTypes)) return set;
+  lockedTypes.forEach((item) => {
+    const type = typeof item === 'string' ? item.trim() : '';
+    if (type) set.add(type);
+  });
+  return set;
+}
+
 export function normalizeLbs(value) {
   const n = toNumberOrNaN(value);
   if (!Number.isFinite(n) || n <= 0) return 0.0;
@@ -59,11 +69,39 @@ export function safeClassifyMaterials(classifyResponse, rates = MATERIAL_RATES) 
     .filter(Boolean);
 }
 
-export function mergeMaterials(aiRows = [], manualRows = [], rates = MATERIAL_RATES) {
+export function applyAiAutofill(incomingAiRows = [], lockedTypes = [], rates = MATERIAL_RATES) {
+  const lockedSet = toLockedTypeSet(lockedTypes);
+  const deduped = new Map();
+  const ordered = [];
+
+  incomingAiRows.forEach((row) => {
+    const canonical = toCanonicalMaterialRow(row, rates);
+    if (!canonical || lockedSet.has(canonical.type)) return;
+    if (!deduped.has(canonical.type)) {
+      ordered.push(canonical.type);
+      deduped.set(canonical.type, canonical.weight_lbs);
+      return;
+    }
+    deduped.set(canonical.type, normalizeLbs(deduped.get(canonical.type) + canonical.weight_lbs));
+  });
+
+  return ordered.map((type) => ({
+    type,
+    weight_lbs: deduped.get(type),
+    estimated_value: roundToTwoDecimals(deduped.get(type) * toRate(type, rates)),
+  }));
+}
+
+export function mergeMaterials(aiRows = [], manualRows = [], rates = MATERIAL_RATES, lockedTypes = []) {
   const mergedByType = new Map();
   const orderedTypes = [];
+  const lockedSet = toLockedTypeSet(lockedTypes);
 
-  const allRows = [...aiRows, ...manualRows];
+  const filteredAiRows = aiRows.filter((row) => {
+    const type = typeof row?.type === 'string' ? row.type.trim() : '';
+    return type && !lockedSet.has(type);
+  });
+  const allRows = [...filteredAiRows, ...manualRows];
   allRows.forEach((row) => {
     const canonical = toCanonicalMaterialRow(row, rates);
     if (!canonical) return;
@@ -92,11 +130,12 @@ export function buildListingPayload({
   form = {},
   aiMaterials = [],
   manualMaterials = [],
+  lockedTypes = [],
   lat,
   lng,
   rates = MATERIAL_RATES,
 }) {
-  const canonicalMaterials = mergeMaterials(aiMaterials, manualMaterials, rates);
+  const canonicalMaterials = mergeMaterials(aiMaterials, manualMaterials, rates, lockedTypes);
   const safeLat = Number.isFinite(Number(lat)) ? Number(lat) : 37.3541;
   const safeLng = Number.isFinite(Number(lng)) ? Number(lng) : -121.9552;
   const listing_kind = form?.listing_kind === 'business' ? 'business' : 'household';
@@ -124,4 +163,3 @@ export async function postListingFromUploadPipeline(params) {
   const response = await api.createListing(payload);
   return { response, payload };
 }
-

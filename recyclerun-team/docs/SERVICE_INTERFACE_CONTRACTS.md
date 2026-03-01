@@ -8,6 +8,8 @@ Backend producers/routes audited:
 
 - `backend/services/vision.py`
 - `backend/routes/classify.py`
+- `backend/services/gemini_live.py`
+- `backend/routes/live_vision.py`
 - `backend/services/optimizer.py`
 - `backend/routes/optimize.py`
 - `backend/services/voice.py`
@@ -17,6 +19,8 @@ Backend producers/routes audited:
 Frontend consumers audited:
 
 - `frontend/src/services/api.js`
+- `mobile/src/services/api.js`
+- `mobile/src/screens/PostScreen.js`
 - `frontend/src/hooks/useRoute.js`
 - `frontend/src/components/household/PhotoUpload.jsx`
 - `frontend/src/components/driver/RouteBanner.jsx`
@@ -142,6 +146,164 @@ JSON-schema-like snippet (error):
   }
 }
 ```
+
+## Live Vision Session Contract (`/api/live-vision/*`)
+
+Producer path:
+
+- `backend/routes/live_vision.py`
+- `backend/services/gemini_live.py`
+
+### Endpoint: `POST /api/live-vision/session/start`
+
+Request body:
+
+- Optional object.
+- Optional fields:
+  - `model`: string
+  - `force_demo`: boolean
+
+Success response (`HTTP 201`):
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `success` | boolean | Yes | Always `true` |
+| `session_id` | string | Yes | Server-generated opaque id |
+| `model` | string | Yes | Effective Gemini model |
+| `state` | string | Yes | `ready` |
+| `source_mode` | string | Yes | `gemini_live` \| `gemini_live_demo` |
+| `timeout_seconds` | number | Yes | `>= 1` |
+| `session_ttl_seconds` | integer | Yes | `>= 30` |
+| `reason` | string | Yes | `ready` \| `forced_demo_mode` \| `gemini_api_key_missing` |
+
+### Endpoint: `POST /api/live-vision/session/<session_id>/frame`
+
+Request body:
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `frame_base64` | string | Yes | Valid base64, max bytes enforced by `GEMINI_LIVE_MAX_FRAME_BYTES` |
+| `mime_type` | string | Optional | `image/jpeg` \| `image/png` (default `image/jpeg`) |
+| `frame_seq` | integer | Optional | `>= 0` client sequence hint |
+
+Success response (`HTTP 200`):
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `success` | boolean | Yes | Always `true` |
+| `source` | string | Yes | `gemini_live` \| `gemini_live_demo` |
+| `session_id` | string | Yes | Must match active session |
+| `frame_seq` | integer | Yes | Monotonic per session |
+| `materials` | array<object> | Yes | Material schema below |
+| `total_lbs` | number | Yes | Rounded to 1 decimal |
+| `total_value` | number | Yes | Rounded to 2 decimals |
+| `notes` | string | Yes | Parse notes or fallback reason text |
+| `stable` | boolean | Yes | Rolling prediction stability over recent frames |
+| `latency_ms` | integer | Yes | End-to-end processing latency |
+
+`materials[]` item fields:
+
+| Field | Type | Required | Constraints |
+|---|---|---|---|
+| `type` | string | Yes | Must be one of `MATERIAL_RATES` keys |
+| `label` | string | Yes | Material label |
+| `emoji` | string | Yes | Material emoji |
+| `lbs` | number | Yes | Clamped by `GEMINI_LIVE_MIN_LBS`/`GEMINI_LIVE_MAX_LBS`, rounded to 1 decimal |
+| `rate` | number | Yes | Material payout rate |
+| `value` | number | Yes | `lbs * rate`, rounded to 2 decimals |
+| `confidence` | number | Yes | Clamped to `[0,1]`, default `0.8` |
+| `raw_confidence` | number | Optional | Present when upstream provides it |
+| `provenance` | string | Optional | Present when upstream provides it |
+
+JSON-schema-like snippet (frame success):
+
+```json
+{
+  "type": "object",
+  "required": [
+    "success",
+    "source",
+    "session_id",
+    "frame_seq",
+    "materials",
+    "total_lbs",
+    "total_value",
+    "notes",
+    "stable",
+    "latency_ms"
+  ],
+  "properties": {
+    "success": { "const": true },
+    "source": { "enum": ["gemini_live", "gemini_live_demo"] },
+    "session_id": { "type": "string" },
+    "frame_seq": { "type": "integer", "minimum": 1 },
+    "materials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "label", "emoji", "lbs", "rate", "value", "confidence"],
+        "properties": {
+          "type": { "type": "string" },
+          "label": { "type": "string" },
+          "emoji": { "type": "string" },
+          "lbs": { "type": "number" },
+          "rate": { "type": "number" },
+          "value": { "type": "number" },
+          "confidence": { "type": "number" },
+          "raw_confidence": { "type": "number" },
+          "provenance": { "type": "string" }
+        }
+      }
+    },
+    "total_lbs": { "type": "number" },
+    "total_value": { "type": "number" },
+    "notes": { "type": "string" },
+    "stable": { "type": "boolean" },
+    "latency_ms": { "type": "integer", "minimum": 0 }
+  }
+}
+```
+
+### Endpoint: `POST /api/live-vision/session/<session_id>/stop`
+
+Success response (`HTTP 200`):
+
+- `{ success:true, session_id:string, state:"closed", already_closed:boolean }`
+- Idempotent: repeated stop calls remain `success:true` with `already_closed:true`.
+
+### Endpoint: `GET /api/live-vision/session/<session_id>/health`
+
+Success response (`HTTP 200`) includes:
+
+- `success`, `session_id`, `state`, `model`, `source_mode`, `frame_seq`, `seconds_since_activity`, `session_age_seconds`, `session_ttl_seconds`.
+
+### Error Envelope (all live endpoints)
+
+Structured failure envelope is always:
+
+- `success:false`
+- `error` / `code`
+- `message`
+- optional `errors` + `details`
+
+Common machine-readable `code` values:
+
+- `validation_error`
+- `live_session_not_found`
+- `live_session_expired`
+- `live_frame_rate_limited`
+- `live_vision_start_failed`
+- `live_vision_frame_failed`
+- `live_vision_stop_failed`
+- `live_vision_health_failed`
+
+### Live Fallback Semantics
+
+| Condition | Result |
+|---|---|
+| `GEMINI_API_KEY` missing OR `force_demo=true` at session start | Session starts in demo mode (`source_mode=gemini_live_demo`) |
+| Upstream timeout / request error / non-200 / parse failure | `frame` returns success payload with `source=gemini_live_demo`, empty `materials`, deterministic fallback notes |
+| Valid model output parse | `frame` returns `source=gemini_live` with normalized material rows |
 
 ## Optimize Route Summary Contract (`POST /api/optimize-route`)
 
@@ -360,6 +522,7 @@ Timeout/error semantics:
 | Frontend file | Endpoint/data source | Fields read |
 |---|---|---|
 | `frontend/src/components/household/PhotoUpload.jsx` | `api.classifyImage` (`/api/classify`) | `source`, `materials[].{emoji,label,type,lbs,confidence,value}`, `total_value`, `total_lbs` |
+| `mobile/src/screens/PostScreen.js` | `api.startLiveVisionSession`, `api.sendLiveVisionFrame`, `api.stopLiveVisionSession` | `session_id`, `source_mode`, `source`, `materials[].{type,lbs}`, `notes` |
 | `frontend/src/components/driver/RouteBanner.jsx` | `useRoute().route.summary` (`/api/optimize-route`) | `total_stops`, `total_miles`, `estimated_minutes`, `total_lbs`, `lbs_per_hour`, `total_value`, `objective` |
 | `frontend/src/components/shared/NotificationOverlay.jsx` | `useRoute().notifications` (`/api/accept-route` response or local fallback) | `household`, `eta_minutes`, `notification.mode` |
 | `frontend/src/hooks/useRoute.js` | `api.optimizeRoute`, `api.acceptRoute` | checks `data?.stops`, stores `data?.notifications`, local fallback injects `eta_minutes` |
@@ -374,6 +537,7 @@ Timeout/error semantics:
 | D-003 | P1 | **Schema delta in PH4-SOHAM-01**: `mode:"demo"` is now standardized to always include `message` + `reason`; `mode:"failed"` now includes required `reason`. Migration: typed clients can remove old demo-no-message branch and must accept `reason` on failed/demo. | `backend/services/voice.py::notify`, `backend/services/voice.py::_make_call` |
 | D-004 | P2 | `/api/optimize-route` success payload does not include `success:true`, while many other routes use explicit success/error envelopes. | `backend/routes/optimize.py::optimize_route`, `backend/utils/http.py` |
 | D-005 | P2 | Several summary fields are documented as numeric values but may serialize as integer tokens in zero-value cases (Python `round(sum(...), n)` behavior). | `backend/services/optimizer.py::_build_summary` |
+| D-006 | P1 | New live fallback source `gemini_live_demo` intentionally returns empty `materials` to avoid unsafe autofill when upstream parsing/network fails. Mobile UI must permit manual entry and lock semantics in this mode. | `backend/services/gemini_live.py::classify_frame`, `mobile/src/screens/PostScreen.js` |
 
 ## Follow-Up Fixes
 
@@ -381,3 +545,4 @@ Timeout/error semantics:
 - `[P1]` Normalize `notifications[]` entry envelope so `household` and `phone` are always present (or formally nullable) across all skip/success reasons.
 - `[P2]` Decide whether `/api/optimize-route` should adopt the shared `{success:true,...}` envelope for consistency.
 - `[P2]` Coerce summary numeric outputs to explicit float serialization where required by strict contract tooling.
+- `[P1]` Add optional confidence smoothing/temporal aggregation for `gemini_live` before exposing auto-fill to production traffic.

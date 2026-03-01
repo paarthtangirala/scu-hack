@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
   Pressable,
@@ -8,9 +8,11 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 
 import { Card, PrimaryButton, SectionTitle, SecondaryButton, colors } from "../components/ui";
+import { API_BASE_URL, LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
 import { api } from "../services/api";
 import { FALLBACK_MATERIALS } from "../services/materialsFallback";
 
@@ -39,12 +41,27 @@ export function PostScreen() {
   const [imageUri, setImageUri] = useState("");
   const [aiMaterials, setAiMaterials] = useState([]);
   const [manualRows, setManualRows] = useState([]);
+  const [lockedTypes, setLockedTypes] = useState([]);
+  const lockedTypesRef = useRef([]);
   const [manualType, setManualType] = useState("cardboard");
   const [manualLbs, setManualLbs] = useState("");
   const [loadingClassify, setLoadingClassify] = useState(false);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
+  const [captureMode, setCaptureMode] = useState("photo");
+  const [liveSupported, setLiveSupported] = useState(true);
+  const [aiSource, setAiSource] = useState("");
+  const [liveSession, setLiveSession] = useState(null);
+  const [liveRunning, setLiveRunning] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const cameraRef = useRef(null);
+  const frameLoopRef = useRef(null);
+  const frameBusyRef = useRef(false);
 
   const materialKeys = useMemo(() => Object.keys(materials), [materials]);
+
+  useEffect(() => {
+    lockedTypesRef.current = lockedTypes;
+  }, [lockedTypes]);
 
   const loadMaterials = useCallback(async () => {
     const response = await api.getMaterials();
@@ -63,19 +80,93 @@ export function PostScreen() {
     loadMaterials();
   }, [loadMaterials]);
 
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const probe = await api.getLiveVisionSessionHealth("probe");
+      if (!mounted) return;
+      if (probe.ok) {
+        setLiveSupported(true);
+        return;
+      }
+      if (probe.status !== 404) {
+        return;
+      }
+      const code = probe?.data?.code || probe?.data?.error || "";
+      if (code === "live_session_not_found") {
+        setLiveSupported(true);
+        return;
+      }
+      setLiveSupported(false);
+      setCaptureMode("photo");
+      setMessage(
+        `Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`,
+      );
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const upsertManualLock = useCallback((type) => {
+    const normalized = String(type || "").trim();
+    if (!normalized) return;
+    setLockedTypes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+  }, []);
+
+  const normalizeAiRows = useCallback(
+    (rows) => {
+      const locked = new Set(lockedTypesRef.current);
+      const merged = new Map();
+      const order = [];
+      (Array.isArray(rows) ? rows : []).forEach((row) => {
+        const type = typeof row?.type === "string" ? row.type.trim() : "";
+        const lbs = Number(row?.lbs);
+        if (!type || !Number.isFinite(lbs) || lbs <= 0 || locked.has(type)) return;
+        if (!merged.has(type)) {
+          merged.set(type, lbs);
+          order.push(type);
+          return;
+        }
+        merged.set(type, merged.get(type) + lbs);
+      });
+      return order.map((type) => ({
+        type,
+        lbs: Math.round(merged.get(type) * 10) / 10,
+      }));
+    },
+    [],
+  );
+
   const addManualRow = () => {
     const lbs = Number(manualLbs);
     if (!manualType || Number.isNaN(lbs) || lbs <= 0) {
       setMessage("Enter a valid material type and lbs > 0");
       return;
     }
+    upsertManualLock(manualType);
     setManualRows((prev) => [...prev, { id: String(Date.now()), type: manualType, lbs }]);
     setManualLbs("");
     setMessage("");
   };
 
   const removeManualRow = (id) => {
-    setManualRows((prev) => prev.filter((row) => row.id !== id));
+    setManualRows((prev) => {
+      const target = prev.find((row) => row.id === id);
+      if (target?.type) upsertManualLock(target.type);
+      return prev.filter((row) => row.id !== id);
+    });
+  };
+
+  const updateManualRowLbs = (id, value) => {
+    const parsed = Number(value);
+    setManualRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        upsertManualLock(row.type);
+        return { ...row, lbs: Number.isFinite(parsed) && parsed > 0 ? parsed : row.lbs };
+      }),
+    );
   };
 
   const pickAndClassifyImage = async () => {
@@ -104,11 +195,114 @@ export function PostScreen() {
     if (!classify.ok) {
       setMessage(formatApiFailure("Classify", classify));
       setAiMaterials([]);
+      setAiSource("");
     } else {
-      setAiMaterials(classify.data?.materials || []);
+      setAiMaterials(normalizeAiRows(classify.data?.materials || []));
+      setAiSource(classify.data?.source || "amd");
       setMessage("AI materials detected. Review and submit listing.");
     }
     setLoadingClassify(false);
+  };
+
+  const clearLiveFrameLoop = useCallback(() => {
+    if (!frameLoopRef.current) return;
+    clearInterval(frameLoopRef.current);
+    frameLoopRef.current = null;
+  }, []);
+
+  const stopLivePreview = useCallback(async () => {
+    clearLiveFrameLoop();
+    setLiveRunning(false);
+    frameBusyRef.current = false;
+    if (!liveSession?.session_id) return;
+    await api.stopLiveVisionSession(liveSession.session_id);
+    setLiveSession(null);
+  }, [clearLiveFrameLoop, liveSession]);
+
+  const sendLiveFrame = useCallback(
+    async (sessionId) => {
+      if (!sessionId || frameBusyRef.current || !cameraRef.current) return;
+      frameBusyRef.current = true;
+      try {
+        const photo = await cameraRef.current.takePictureAsync({
+          base64: true,
+          quality: 0.35,
+          skipProcessing: true,
+        });
+        if (!photo?.base64) return;
+        const response = await api.sendLiveVisionFrame(sessionId, {
+          frame_base64: photo.base64,
+          mime_type: "image/jpeg",
+        });
+        if (!response.ok) {
+          setMessage(formatApiFailure("Live preview", response));
+          return;
+        }
+        setAiSource(response.data?.source || "gemini_live");
+        setAiMaterials(normalizeAiRows(response.data?.materials || []));
+        setMessage(response.data?.source === "gemini_live_demo"
+          ? "Live AI fallback mode active. You can still add/edit materials manually."
+          : "Live AI preview active.");
+      } finally {
+        frameBusyRef.current = false;
+      }
+    },
+    [normalizeAiRows],
+  );
+
+  const startLivePreview = useCallback(async () => {
+    const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
+    if (!permission?.granted) {
+      setMessage("Camera permission is required for Live AI Preview");
+      return;
+    }
+
+    const start = await api.startLiveVisionSession({});
+    if (!start.ok) {
+      if (start.status === 404) {
+        setLiveSupported(false);
+        setCaptureMode("photo");
+        setMessage(
+          `Live session start failed: backend missing /api/live-vision routes at ${API_BASE_URL}.`,
+        );
+      } else {
+        setMessage(formatApiFailure("Live session start", start));
+      }
+      return;
+    }
+
+    const sessionId = start.data?.session_id;
+    if (!sessionId) {
+      setMessage("Live session did not return session_id");
+      return;
+    }
+
+    setLiveSession(start.data);
+    setLiveRunning(true);
+    setAiSource(start.data?.source_mode || "");
+    await sendLiveFrame(sessionId);
+    clearLiveFrameLoop();
+    frameLoopRef.current = setInterval(() => {
+      sendLiveFrame(sessionId);
+    }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
+  }, [cameraPermission, clearLiveFrameLoop, requestCameraPermission, sendLiveFrame]);
+
+  useEffect(() => {
+    return () => {
+      stopLivePreview();
+    };
+  }, [stopLivePreview]);
+
+  useEffect(() => {
+    const locked = new Set(lockedTypes);
+    setAiMaterials((prev) => prev.filter((row) => !locked.has(row.type)));
+  }, [lockedTypes]);
+
+  const resetAiSuggestions = () => {
+    setLockedTypes([]);
+    setAiMaterials([]);
+    setAiSource("");
+    setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
   };
 
   const submitListing = async () => {
@@ -117,8 +311,11 @@ export function PostScreen() {
       return;
     }
 
+    const locked = new Set(lockedTypes);
     const merged = [
-      ...aiMaterials.map((m) => ({ type: m.type, lbs: Number(m.lbs) })),
+      ...aiMaterials
+        .filter((m) => !locked.has(m.type))
+        .map((m) => ({ type: m.type, lbs: Number(m.lbs) })),
       ...manualRows.map((m) => ({ type: m.type, lbs: Number(m.lbs) })),
     ].filter((m) => m.type && m.lbs > 0);
 
@@ -152,8 +349,11 @@ export function PostScreen() {
     });
     setImageUri("");
     setAiMaterials([]);
+    setAiSource("");
     setManualRows([]);
     setManualLbs("");
+    setLockedTypes([]);
+    stopLivePreview();
   };
 
   return (
@@ -205,15 +405,63 @@ export function PostScreen() {
 
       <Card>
         <Text style={styles.subTitle}>AI Classify (Photo)</Text>
-        {imageUri ? <Image source={{ uri: imageUri }} style={styles.preview} /> : null}
-        <PrimaryButton
-          title={loadingClassify ? "Classifying..." : "Pick Image and Classify"}
-          onPress={pickAndClassifyImage}
-          loading={loadingClassify}
-          disabled={loadingClassify}
-        />
+        <View style={styles.captureModeRow}>
+          {["photo", "live"].map((mode) => (
+            <Pressable
+              key={mode}
+              style={[
+                styles.captureModeToggle,
+                captureMode === mode ? styles.captureModeToggleActive : null,
+                mode === "live" && !liveSupported ? styles.captureModeToggleDisabled : null,
+              ]}
+              onPress={() => {
+                if (mode === "live" && !liveSupported) return;
+                setCaptureMode(mode);
+              }}
+            >
+              <Text style={captureMode === mode ? styles.captureModeTextActive : styles.captureModeText}>
+                {mode === "photo" ? "Photo Upload" : liveSupported ? "Live AI Preview" : "Live AI (Unavailable)"}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {captureMode === "photo" ? (
+          <>
+            {imageUri ? <Image source={{ uri: imageUri }} style={styles.preview} /> : null}
+            <PrimaryButton
+              title={loadingClassify ? "Classifying..." : "Pick Image and Classify"}
+              onPress={pickAndClassifyImage}
+              loading={loadingClassify}
+              disabled={loadingClassify}
+            />
+          </>
+        ) : (
+          <>
+            {cameraPermission?.granted ? (
+              <CameraView ref={cameraRef} style={styles.cameraPreview} facing="back" />
+            ) : (
+              <View style={styles.permissionBox}>
+                <Text style={styles.permissionText}>Camera permission required for live preview.</Text>
+                <SecondaryButton title="Enable Camera" onPress={requestCameraPermission} />
+              </View>
+            )}
+            <View style={styles.liveButtonRow}>
+              <PrimaryButton
+                title={liveRunning ? "Stop Live Preview" : "Start Live Preview"}
+                onPress={liveRunning ? stopLivePreview : startLivePreview}
+                disabled={loadingClassify}
+              />
+              <SecondaryButton title="Reset AI Suggestions" onPress={resetAiSuggestions} />
+            </View>
+            <Text style={styles.liveHint}>
+              Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
+            </Text>
+          </>
+        )}
         {aiMaterials.length ? (
           <View style={styles.materialList}>
+            <Text style={styles.sourceTag}>Source: {aiSource || "unknown"}</Text>
             {aiMaterials.map((m, idx) => (
               <Text style={styles.materialRow} key={`${m.type}-${idx}`}>
                 {materials[m.type]?.emoji || "♻️"} {m.type} - {Number(m.lbs).toFixed(1)} lbs
@@ -253,6 +501,12 @@ export function PostScreen() {
             <Text style={styles.manualText}>
               {materials[row.type]?.emoji || "♻️"} {row.type} - {row.lbs.toFixed(1)} lbs
             </Text>
+            <TextInput
+              value={String(row.lbs)}
+              onChangeText={(text) => updateManualRowLbs(row.id, text)}
+              keyboardType="decimal-pad"
+              style={styles.manualLbsInput}
+            />
             <SecondaryButton title="Remove" onPress={() => removeManualRow(row.id)} />
           </View>
         ))}
@@ -324,9 +578,74 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 10,
   },
+  cameraPreview: {
+    width: "100%",
+    height: 220,
+    borderRadius: 12,
+    marginBottom: 10,
+    overflow: "hidden",
+  },
+  captureModeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 10,
+  },
+  captureModeToggle: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingVertical: 8,
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  captureModeToggleActive: {
+    backgroundColor: "#EAF8F3",
+    borderColor: colors.primary,
+  },
+  captureModeToggleDisabled: {
+    opacity: 0.5,
+  },
+  captureModeText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  captureModeTextActive: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  permissionBox: {
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 10,
+    backgroundColor: "#fff",
+  },
+  permissionText: {
+    color: colors.ink,
+    marginBottom: 8,
+    fontSize: 12,
+  },
+  liveButtonRow: {
+    gap: 8,
+  },
+  liveHint: {
+    marginTop: 8,
+    color: colors.muted,
+    fontSize: 11,
+  },
   materialList: {
     marginTop: 10,
     gap: 4,
+  },
+  sourceTag: {
+    color: colors.muted,
+    marginBottom: 4,
+    fontSize: 11,
+    fontWeight: "600",
   },
   materialRow: {
     color: colors.ink,
@@ -373,6 +692,17 @@ const styles = StyleSheet.create({
     marginRight: 8,
     color: colors.ink,
     fontSize: 13,
+  },
+  manualLbsInput: {
+    width: 64,
+    marginRight: 6,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+    fontSize: 12,
   },
   message: {
     marginBottom: 8,

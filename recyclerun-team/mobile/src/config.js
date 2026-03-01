@@ -13,6 +13,14 @@ function isIpv4(host) {
   return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
 }
 
+function isPrivateIpv4(host) {
+  return (
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+  );
+}
+
 function hostFromScriptURL(scriptURL) {
   if (!scriptURL) return "";
   try {
@@ -41,12 +49,32 @@ function shouldPreferAutoLan(envApiBaseUrl) {
   );
 }
 
+function shouldUseDerivedHost(envApiBaseUrl, derivedHost) {
+  if (!derivedHost || !isIpv4(derivedHost)) return false;
+  if (shouldPreferAutoLan(envApiBaseUrl)) return true;
+  try {
+    const envHost = new URL(envApiBaseUrl).hostname;
+    if (!isIpv4(envHost)) return false;
+    return envHost !== derivedHost && isPrivateIpv4(envHost);
+  } catch {
+    return false;
+  }
+}
+
+const derivedLanApiBaseUrl = deriveLanApiBaseUrl();
+const derivedLanHost = hostFromScriptURL(NativeModules?.SourceCode?.scriptURL);
 const autoLanApiBaseUrl =
-  AUTO_LAN_ENABLED && shouldPreferAutoLan(ENV_API_BASE_URL) ? deriveLanApiBaseUrl() : "";
+  AUTO_LAN_ENABLED && shouldUseDerivedHost(ENV_API_BASE_URL, derivedLanHost)
+    ? derivedLanApiBaseUrl
+    : "";
 
 export const API_BASE_URL = stripTrailingSlash(
   autoLanApiBaseUrl || ENV_API_BASE_URL || `http://127.0.0.1:${DEFAULT_API_PORT}/api`,
 );
 export const API_BASE_SOURCE = autoLanApiBaseUrl ? "auto-lan" : ENV_API_BASE_URL ? "env" : "default";
+export const LIVE_PREVIEW_FRAME_INTERVAL_MS = Math.max(
+  500,
+  Number(process.env.EXPO_PUBLIC_LIVE_PREVIEW_FRAME_INTERVAL_MS || "1000"),
+);
 
 export const APP_NAME = "RecycleRun";
