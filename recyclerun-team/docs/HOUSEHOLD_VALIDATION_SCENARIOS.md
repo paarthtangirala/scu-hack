@@ -1,4 +1,4 @@
-# RecycleRun — Household Listing Flow: Validation Scenario Matrix
+# Bin2Bucks — Household Listing Flow: Validation Scenario Matrix
 **Branch:** feat/sara/ph2-household-validation
 **Owner:** Sara
 **Issue:** PH2-SARA-01 (#8)

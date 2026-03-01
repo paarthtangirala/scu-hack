@@ -16,26 +16,26 @@ Use a managed cloud host with HTTPS and health checks.
 
 1. Deploy Flask API to managed host (Render shown below).
 2. Use stable HTTPS domain:
-   - temporary: `https://recyclerun-api.onrender.com/api`
-   - preferred: custom domain like `https://api.recyclerun.app/api`
+   - temporary: `https://bin2bucks-api.onrender.com/api`
+   - preferred: custom domain like `https://api.bin2bucks.app/api`
 3. Point Expo app to that domain.
 
 ## Render Deploy (included config)
 
-Repo includes [`render.yaml`](/Users/paarthtangirala/Documents/Documents-MacBookAir/GitHub/SCU%20hack/recyclerun-team/render.yaml).
+Repo includes [`render.yaml`](../render.yaml).
 
 ### Steps
 
 1. Push `pre-master` to GitHub.
 2. In Render, create new Blueprint deploy from repo root.
-3. Confirm service `recyclerun-api` is detected.
+3. Confirm service `bin2bucks-api` is detected.
 4. Set secret env vars in Render dashboard:
    - `AMD_API_KEY`
    - `ELEVENLABS_API_KEY`
    - `TWILIO_ACCOUNT_SID`
    - `TWILIO_AUTH_TOKEN`
    - `TWILIO_PHONE_NUMBER`
-   - `STORE_DB_PATH=/tmp/recyclerun_store.sqlite3` (shared SQLite state for multi-worker consistency)
+   - `STORE_DB_PATH=/tmp/bin2bucks_store.sqlite3` (shared SQLite state for multi-worker consistency)
    - `WEB_CONCURRENCY=1` (stability-first default; increase only after load-testing)
 5. Deploy and verify:
    - `GET https://<render-domain>/api/health` returns `status: ok`.
@@ -43,7 +43,7 @@ Repo includes [`render.yaml`](/Users/paarthtangirala/Documents/Documents-MacBook
 ## Mobile: switch to production API (one command)
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 ./scripts/mobile/use-prod-api.sh https://<render-domain>/api
 cd mobile
 npm start
@@ -57,7 +57,7 @@ This writes `mobile/.env` with:
 ## Rollback to local LAN profile
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 ./scripts/mobile/use-lan-api.sh
 cd mobile
 npm start

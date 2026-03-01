@@ -20,6 +20,10 @@ export function SectionTitle({ title, subtitle }) {
   );
 }
 
+export function SectionKicker({ title }) {
+  return <Text style={styles.kicker}>{title}</Text>;
+}
+
 export function PrimaryButton({ title, onPress, disabled, loading }) {
   return (
     <Pressable
@@ -58,82 +62,111 @@ export function StatPill({ label, value }) {
 }
 
 export const colors = {
-  bg: "#F4F2E9",
-  card: "#FFFFFF",
-  ink: "#161616",
-  muted: "#545454",
-  primary: "#0D7A5A",
-  border: "#E7E4D8",
-  accent: "#E4A600",
+  bg: "#050B07",
+  surface: "#0B1710",
+  card: "rgba(11, 24, 16, 0.94)",
+  cardSoft: "rgba(11, 24, 16, 0.7)",
+  ink: "#E7F1E8",
+  muted: "#78917A",
+  primary: "#00E87A",
+  primaryDark: "#042A18",
+  border: "rgba(137, 171, 142, 0.2)",
+  accent: "#F5A623",
+  danger: "#FF6B6B",
 };
 
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 14,
-    marginBottom: 12,
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 6,
   },
   sectionHeader: {
-    marginBottom: 10,
+    marginBottom: 14,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: "700",
+    fontSize: 48,
+    lineHeight: 54,
+    fontWeight: "800",
     color: colors.ink,
   },
   sectionSubtitle: {
-    marginTop: 4,
+    marginTop: 8,
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 17,
+    lineHeight: 28,
+    fontWeight: "500",
+  },
+  kicker: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 2,
+    marginBottom: 10,
+    textTransform: "uppercase",
   },
   primaryButton: {
     backgroundColor: colors.primary,
-    borderRadius: 12,
-    paddingVertical: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(0, 232, 122, 0.45)",
+    paddingVertical: 15,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    elevation: 6,
   },
   primaryButtonText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
+    color: colors.primaryDark,
+    fontSize: 18,
+    fontWeight: "800",
   },
   secondaryButton: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 12,
-    paddingVertical: 10,
+    borderRadius: 18,
+    paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FDFDFB",
+    backgroundColor: colors.cardSoft,
   },
   secondaryButtonText: {
     color: colors.ink,
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 16,
+    fontWeight: "700",
   },
   disabled: {
-    opacity: 0.55,
+    opacity: 0.5,
   },
   pill: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 12,
-    padding: 10,
+    borderRadius: 14,
+    padding: 12,
     minWidth: 88,
-    backgroundColor: "#FCFBF6",
+    backgroundColor: colors.cardSoft,
   },
   pillLabel: {
     color: colors.muted,
-    fontSize: 11,
+    fontSize: 12,
+    letterSpacing: 0.3,
+    fontWeight: "700",
   },
   pillValue: {
-    marginTop: 2,
+    marginTop: 4,
     color: colors.ink,
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "800",
   },
 });

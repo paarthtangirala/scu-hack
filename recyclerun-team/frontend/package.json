@@ -1,5 +1,5 @@
 {
-  "name": "recyclerun-frontend",
+  "name": "bin2bucks-frontend",
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",

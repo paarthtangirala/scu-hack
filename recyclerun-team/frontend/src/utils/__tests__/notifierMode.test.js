@@ -39,9 +39,9 @@ describe('Group 1 — getNotifierMode()', () => {
       notifications_sent: 2,
       notifications: [
         { listing_id: 'listing_001', household: 'Chen Family',
-          notification: { success: true, mode: 'demo', message: 'RecycleRun driver arriving in 8 min' } },
+          notification: { success: true, mode: 'demo', message: 'Bin2Bucks driver arriving in 8 min' } },
         { listing_id: 'listing_002', household: 'Rivera Household',
-          notification: { success: true, mode: 'demo', message: 'RecycleRun driver arriving in 14 min' } },
+          notification: { success: true, mode: 'demo', message: 'Bin2Bucks driver arriving in 14 min' } },
       ],
     };
     expect(getNotifierMode(response)).toBe('demo');

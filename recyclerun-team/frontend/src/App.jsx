@@ -1,5 +1,5 @@
 /**
- * RecycleRun — Main App
+ * Bin2Bucks — Main App
  * Owner: Anisha (routing / shell)
  */
 import { useState } from 'react';

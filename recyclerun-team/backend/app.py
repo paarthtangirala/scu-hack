@@ -1,5 +1,5 @@
 """
-RecycleRun Flask application entry point.
+Bin2Bucks Flask application entry point.
 """
 import os
 from pathlib import Path
@@ -30,5 +30,5 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "5050"))
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
-    print(f"♻️  RecycleRun backend — http://{host}:{port}")
+    print(f"♻️  Bin2Bucks backend — http://{host}:{port}")
     app.run(host=host, port=port, debug=debug)

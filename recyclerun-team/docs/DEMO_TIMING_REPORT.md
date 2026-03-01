@@ -1,4 +1,4 @@
-# RecycleRun — 4-Minute Demo Timing Report
+# Bin2Bucks — 4-Minute Demo Timing Report
 **Date:** 2026-02-28
 **Branch:** feat/sara/ph5-regression-timing-report
 **Owner:** Sara
@@ -13,7 +13,7 @@
 
 | Beat ID | Action | Start | End | Budget (s) | Median (s) | Worst Case (s) | Buffer (s) | Risk |
 |---------|--------|-------|-----|-----------|-----------|----------------|-----------|------|
-| B-01 | Verbal open — SB 1383 stat, RecycleRun pitch | 0:00 | 0:10 | 10 | 10 | 12 | -2 | Low — verbal only, no tech |
+| B-01 | Verbal open — SB 1383 stat, Bin2Bucks pitch | 0:00 | 0:10 | 10 | 10 | 12 | -2 | Low — verbal only, no tech |
 | B-02 | Navigate to Household page; frame Maria's scenario | 0:10 | 0:30 | 20 | 8 | 12 | +8 | Low — page is pre-loaded |
 | B-03 | Select photo, click "Classify with AI" → AMD → result renders | 0:30 | 0:50 | 20 | 4 | 12 | +8 | **Medium** — AMD API 2–10s; see W-03 |
 | B-04 | Show material breakdown ($8.96, 19.5 lbs); click Submit → `POST /api/listings` | 0:50 | 1:00 | 10 | 3 | 6 | +4 | Low — POST is fast, response not checked |

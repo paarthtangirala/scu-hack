@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Image,
   Pressable,
@@ -8,13 +8,13 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
-
-import { Card, PrimaryButton, SectionTitle, SecondaryButton, colors } from "../components/ui";
-import { API_BASE_URL, LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { api } from "../services/api";
 import { FALLBACK_MATERIALS } from "../services/materialsFallback";
+import { Card, PrimaryButton, SecondaryButton, SectionKicker, colors } from "../components/ui";
+
+const PLACEHOLDER = "rgba(120, 145, 122, 0.8)";
 
 function randomLatLng() {
   return {
@@ -41,143 +41,27 @@ export function PostScreen() {
   const [imageUri, setImageUri] = useState("");
   const [aiMaterials, setAiMaterials] = useState([]);
   const [manualRows, setManualRows] = useState([]);
-  const [lockedTypes, setLockedTypes] = useState([]);
-  const lockedTypesRef = useRef([]);
   const [manualType, setManualType] = useState("cardboard");
   const [manualLbs, setManualLbs] = useState("");
   const [loadingClassify, setLoadingClassify] = useState(false);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
-  const [captureMode, setCaptureMode] = useState("photo");
-  const [liveSupported, setLiveSupported] = useState(true);
-  const [aiSource, setAiSource] = useState("");
-  const [liveSession, setLiveSession] = useState(null);
-  const [liveRunning, setLiveRunning] = useState(false);
-  const [startingLive, setStartingLive] = useState(false);
-  const [cameraReady, setCameraReady] = useState(false);
-  const [pendingDetection, setPendingDetection] = useState(null);
-  const [scanDecisionPromptVisible, setScanDecisionPromptVisible] = useState(false);
-  const [livePausedForReview, setLivePausedForReview] = useState(false);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const cameraRef = useRef(null);
-  const liveSessionIdRef = useRef("");
-  const frameLoopRef = useRef(null);
-  const frameBusyRef = useRef(false);
-  const livePausedForReviewRef = useRef(false);
-  const pendingDetectionRef = useRef(null);
-  const scanDecisionPromptVisibleRef = useRef(false);
-
-  const materialKeys = useMemo(() => Object.keys(materials), [materials]);
-  const liveFlowStage = useMemo(() => {
-    if (startingLive) return "starting";
-    if (!liveRunning) return "idle";
-    if (pendingDetection) return "review";
-    if (scanDecisionPromptVisible) return "decision";
-    return "scanning";
-  }, [liveRunning, pendingDetection, scanDecisionPromptVisible, startingLive]);
-  const liveFlowMessage = useMemo(() => {
-    if (liveFlowStage === "starting") return "Starting session and capturing first frame.";
-    if (liveFlowStage === "review") return "Review detection, then add or skip.";
-    if (liveFlowStage === "decision") return "Choose to keep scanning or end the live session.";
-    if (liveFlowStage === "scanning") return "Scanning camera feed and waiting for next detection.";
-    return "Tap Start Live Preview to begin guided scan mode.";
-  }, [liveFlowStage]);
-
-  useEffect(() => {
-    lockedTypesRef.current = lockedTypes;
-  }, [lockedTypes]);
-
-  useEffect(() => {
-    livePausedForReviewRef.current = livePausedForReview;
-  }, [livePausedForReview]);
-
-  useEffect(() => {
-    pendingDetectionRef.current = pendingDetection;
-  }, [pendingDetection]);
-
-  useEffect(() => {
-    scanDecisionPromptVisibleRef.current = scanDecisionPromptVisible;
-  }, [scanDecisionPromptVisible]);
-
-  useEffect(() => {
-    if (!cameraPermission?.granted) {
-      setCameraReady(false);
-    }
-  }, [cameraPermission?.granted]);
+  const materialKeys = useMemo(() => Object.keys(materials || {}), [materials]);
+  const messageIsError = /failed|required|valid|permission/i.test(message || "");
 
   const loadMaterials = useCallback(async () => {
     const response = await api.getMaterials();
     if (response.ok && response.data) {
       setMaterials(response.data);
       const keys = Object.keys(response.data);
-      if (keys.length && !keys.includes(manualType)) {
-        setManualType(keys[0]);
-      }
-    } else {
-      setMessage(formatApiFailure("Load materials", response));
+      if (keys.length && !keys.includes(manualType)) setManualType(keys[0]);
+      return;
     }
+    setMessage(formatApiFailure("Load materials", response));
   }, [manualType]);
 
   useEffect(() => {
     loadMaterials();
   }, [loadMaterials]);
-
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const probe = await api.getLiveVisionSessionHealth("probe");
-      if (!mounted) return;
-      if (probe.ok) {
-        setLiveSupported(true);
-        return;
-      }
-      if (probe.status !== 404) {
-        return;
-      }
-      const code = probe?.data?.code || probe?.data?.error || "";
-      if (code === "live_session_not_found") {
-        setLiveSupported(true);
-        return;
-      }
-      setLiveSupported(false);
-      setCaptureMode("photo");
-      setMessage(
-        `Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`,
-      );
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const upsertManualLock = useCallback((type) => {
-    const normalized = String(type || "").trim();
-    if (!normalized) return;
-    setLockedTypes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
-  }, []);
-
-  const normalizeAiRows = useCallback(
-    (rows) => {
-      const locked = new Set(lockedTypesRef.current);
-      const merged = new Map();
-      const order = [];
-      (Array.isArray(rows) ? rows : []).forEach((row) => {
-        const type = typeof row?.type === "string" ? row.type.trim() : "";
-        const lbs = Number(row?.lbs);
-        if (!type || !Number.isFinite(lbs) || lbs <= 0 || locked.has(type)) return;
-        if (!merged.has(type)) {
-          merged.set(type, lbs);
-          order.push(type);
-          return;
-        }
-        merged.set(type, merged.get(type) + lbs);
-      });
-      return order.map((type) => ({
-        type,
-        lbs: Math.round(merged.get(type) * 10) / 10,
-      }));
-    },
-    [],
-  );
 
   const addManualRow = () => {
     const lbs = Number(manualLbs);
@@ -185,29 +69,13 @@ export function PostScreen() {
       setMessage("Enter a valid material type and lbs > 0");
       return;
     }
-    upsertManualLock(manualType);
     setManualRows((prev) => [...prev, { id: String(Date.now()), type: manualType, lbs }]);
     setManualLbs("");
     setMessage("");
   };
 
   const removeManualRow = (id) => {
-    setManualRows((prev) => {
-      const target = prev.find((row) => row.id === id);
-      if (target?.type) upsertManualLock(target.type);
-      return prev.filter((row) => row.id !== id);
-    });
-  };
-
-  const updateManualRowLbs = (id, value) => {
-    const parsed = Number(value);
-    setManualRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== id) return row;
-        upsertManualLock(row.type);
-        return { ...row, lbs: Number.isFinite(parsed) && parsed > 0 ? parsed : row.lbs };
-      }),
-    );
+    setManualRows((prev) => prev.filter((row) => row.id !== id));
   };
 
   const pickAndClassifyImage = async () => {
@@ -223,292 +91,21 @@ export function PostScreen() {
       quality: 0.7,
       base64: true,
     });
-    if (result.canceled || !result.assets?.length) {
-      return;
-    }
+    if (result.canceled || !result.assets?.length) return;
 
     const asset = result.assets[0];
     setImageUri(asset.uri || "");
     setLoadingClassify(true);
     setMessage("");
-
     const classify = await api.classifyImage(asset.base64 || "");
     if (!classify.ok) {
       setMessage(formatApiFailure("Classify", classify));
       setAiMaterials([]);
-      setAiSource("");
     } else {
-      setAiMaterials(normalizeAiRows(classify.data?.materials || []));
-      setAiSource(classify.data?.source || "amd");
+      setAiMaterials(classify.data?.materials || []);
       setMessage("AI materials detected. Review and submit listing.");
     }
     setLoadingClassify(false);
-  };
-
-  const clearLiveFrameLoop = useCallback(() => {
-    if (!frameLoopRef.current) return;
-    clearInterval(frameLoopRef.current);
-    frameLoopRef.current = null;
-  }, []);
-
-  const stopLivePreview = useCallback(async () => {
-    clearLiveFrameLoop();
-    setLiveRunning(false);
-    setStartingLive(false);
-    setLivePausedForReview(false);
-    livePausedForReviewRef.current = false;
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setScanDecisionPromptVisible(false);
-    scanDecisionPromptVisibleRef.current = false;
-    frameBusyRef.current = false;
-    const sessionId = liveSessionIdRef.current;
-    liveSessionIdRef.current = "";
-    setLiveSession(null);
-    if (!sessionId) return;
-    await api.stopLiveVisionSession(sessionId);
-  }, [clearLiveFrameLoop]);
-
-  const sendLiveFrame = useCallback(
-    async (sessionId) => {
-      if (!sessionId || frameBusyRef.current || !cameraRef.current || livePausedForReviewRef.current) return;
-      frameBusyRef.current = true;
-      try {
-        const photo = await cameraRef.current.takePictureAsync({
-          base64: true,
-          quality: 0.35,
-          skipProcessing: true,
-        });
-        if (!photo?.base64) return;
-        const response = await api.sendLiveVisionFrame(sessionId, {
-          frame_base64: photo.base64,
-          mime_type: "image/jpeg",
-        });
-        if (!response.ok) {
-          if (response.status === 404) {
-            setLiveSupported(false);
-            setCaptureMode("photo");
-            setMessage(
-              `Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`,
-            );
-            return;
-          }
-          setMessage(formatApiFailure("Live preview", response));
-          return;
-        }
-        setAiSource(response.data?.source || "gemini_live");
-        const normalizedRows = normalizeAiRows(response.data?.materials || []);
-        setAiMaterials(normalizedRows);
-        if (response.data?.source === "gemini_live_demo") {
-          const fallbackReason = String(response.data?.notes || "")
-            .replace(/^Live fallback:\s*/i, "")
-            .trim();
-          const detail = fallbackReason ? ` (${fallbackReason})` : "";
-          setMessage(`Live AI fallback mode active${detail}. You can still add/edit materials manually.`);
-        } else {
-          setMessage("Live AI preview active.");
-          if (
-            normalizedRows.length > 0 &&
-            !pendingDetectionRef.current &&
-            !scanDecisionPromptVisibleRef.current
-          ) {
-            const primary = normalizedRows
-              .slice()
-              .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0))[0];
-            if (primary?.type) {
-              setPendingDetection({
-                type: primary.type,
-                lbs: Number(primary.lbs || 0),
-                source: response.data?.source || "gemini_live",
-              });
-              pendingDetectionRef.current = {
-                type: primary.type,
-                lbs: Number(primary.lbs || 0),
-                source: response.data?.source || "gemini_live",
-              };
-              setLivePausedForReview(true);
-              livePausedForReviewRef.current = true;
-              setScanDecisionPromptVisible(false);
-              scanDecisionPromptVisibleRef.current = false;
-              clearLiveFrameLoop();
-              setMessage(
-                `Detected ${primary.type} (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
-              );
-            }
-          }
-        }
-      } catch (error) {
-        const errorMessage = String(error?.message || "Unable to capture camera frame.");
-        if (errorMessage.toLowerCase().includes("camera unmounted")) {
-          await stopLivePreview();
-          setMessage("Live preview was interrupted by camera remount. Tap Start Live Preview again.");
-          return;
-        }
-        setMessage(`Live preview frame failed: ${errorMessage}`);
-      } finally {
-        frameBusyRef.current = false;
-      }
-    },
-    [
-      clearLiveFrameLoop,
-      normalizeAiRows,
-      stopLivePreview,
-    ],
-  );
-
-  const runLiveLoop = useCallback(
-    (sessionId) => {
-      if (!sessionId) return;
-      clearLiveFrameLoop();
-      frameLoopRef.current = setInterval(() => {
-        sendLiveFrame(sessionId);
-      }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
-    },
-    [clearLiveFrameLoop, sendLiveFrame],
-  );
-
-  const resumeScanning = useCallback(async () => {
-    const sessionId = liveSessionIdRef.current;
-    if (!sessionId) return;
-    setLivePausedForReview(false);
-    livePausedForReviewRef.current = false;
-    setScanDecisionPromptVisible(false);
-    scanDecisionPromptVisibleRef.current = false;
-    setMessage("Live AI preview active.");
-    await sendLiveFrame(sessionId);
-    runLiveLoop(sessionId);
-  }, [runLiveLoop, sendLiveFrame]);
-
-  const finishDetectionDecision = useCallback((added) => {
-    if (added) {
-      setMessage("Item added. Keep scanning or end live preview.");
-    } else {
-      setMessage("Item skipped. Keep scanning or end live preview.");
-    }
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setScanDecisionPromptVisible(true);
-    scanDecisionPromptVisibleRef.current = true;
-  }, []);
-
-  const confirmAddDetected = useCallback(() => {
-    if (!pendingDetection?.type || !Number.isFinite(Number(pendingDetection?.lbs))) {
-      finishDetectionDecision(false);
-      return;
-    }
-    const lbs = Math.round(Number(pendingDetection.lbs) * 10) / 10;
-    setManualRows((prev) => {
-      const existingIdx = prev.findIndex((row) => row.type === pendingDetection.type);
-      if (existingIdx === -1) {
-        return [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs }];
-      }
-      const next = [...prev];
-      const existing = next[existingIdx];
-      next[existingIdx] = {
-        ...existing,
-        lbs: Math.round((Number(existing.lbs || 0) + lbs) * 10) / 10,
-      };
-      return next;
-    });
-    finishDetectionDecision(true);
-  }, [finishDetectionDecision, pendingDetection]);
-
-  const skipDetected = useCallback(() => {
-    finishDetectionDecision(false);
-  }, [finishDetectionDecision]);
-
-  const startLivePreview = useCallback(async () => {
-    if (startingLive || liveRunning) return;
-    setStartingLive(true);
-    const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
-    if (!permission?.granted) {
-      setMessage("Camera permission is required for Live AI Preview");
-      setStartingLive(false);
-      return;
-    }
-    if (!cameraReady) {
-      setMessage("Camera is initializing. Wait 1-2 seconds and tap Start Live Preview again.");
-      setStartingLive(false);
-      return;
-    }
-
-    const start = await api.startLiveVisionSession({});
-    if (!start.ok) {
-      if (start.status === 404) {
-        setLiveSupported(false);
-        setCaptureMode("photo");
-        setMessage(
-          `Live session start failed: backend missing /api/live-vision routes at ${API_BASE_URL}.`,
-        );
-      } else {
-        setMessage(formatApiFailure("Live session start", start));
-      }
-      setStartingLive(false);
-      return;
-    }
-
-    const sessionId = start.data?.session_id;
-    if (!sessionId) {
-      setMessage("Live session did not return session_id");
-      setStartingLive(false);
-      return;
-    }
-
-    try {
-      setLiveSession(start.data);
-      liveSessionIdRef.current = sessionId;
-      setLiveRunning(true);
-      setLivePausedForReview(false);
-      livePausedForReviewRef.current = false;
-      setPendingDetection(null);
-      pendingDetectionRef.current = null;
-      setScanDecisionPromptVisible(false);
-      scanDecisionPromptVisibleRef.current = false;
-      setAiSource(start.data?.source_mode || "");
-      await sendLiveFrame(sessionId);
-      runLiveLoop(sessionId);
-    } catch (error) {
-      setMessage(`Live session start failed: ${error?.message || "Unknown error"}`);
-      await api.stopLiveVisionSession(sessionId);
-      liveSessionIdRef.current = "";
-      setLiveSession(null);
-      setLiveRunning(false);
-    } finally {
-      setStartingLive(false);
-    }
-  }, [
-    cameraPermission,
-    cameraReady,
-    clearLiveFrameLoop,
-    liveRunning,
-    requestCameraPermission,
-    runLiveLoop,
-    sendLiveFrame,
-    startingLive,
-  ]);
-
-  useEffect(() => {
-    return () => {
-      void stopLivePreview();
-    };
-  }, [stopLivePreview]);
-
-  useEffect(() => {
-    const locked = new Set(lockedTypes);
-    setAiMaterials((prev) => prev.filter((row) => !locked.has(row.type)));
-  }, [lockedTypes]);
-
-  const resetAiSuggestions = () => {
-    setLockedTypes([]);
-    setAiMaterials([]);
-    setAiSource("");
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setScanDecisionPromptVisible(false);
-    scanDecisionPromptVisibleRef.current = false;
-    setLivePausedForReview(false);
-    livePausedForReviewRef.current = false;
-    setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
   };
 
   const submitListing = async () => {
@@ -517,13 +114,10 @@ export function PostScreen() {
       return;
     }
 
-    const locked = new Set(lockedTypes);
     const merged = [
-      ...aiMaterials
-        .filter((m) => !locked.has(m.type))
-        .map((m) => ({ type: m.type, lbs: Number(m.lbs) })),
-      ...manualRows.map((m) => ({ type: m.type, lbs: Number(m.lbs) })),
-    ].filter((m) => m.type && m.lbs > 0);
+      ...aiMaterials.map((item) => ({ type: item.type, lbs: Number(item.lbs) })),
+      ...manualRows.map((item) => ({ type: item.type, lbs: Number(item.lbs) })),
+    ].filter((item) => item.type && item.lbs > 0);
 
     if (!merged.length) {
       setMessage("Add at least one material");
@@ -539,7 +133,6 @@ export function PostScreen() {
       materials: merged,
     });
     setLoadingSubmit(false);
-
     if (!response.ok) {
       setMessage(formatApiFailure("Post", response));
       return;
@@ -555,226 +148,195 @@ export function PostScreen() {
     });
     setImageUri("");
     setAiMaterials([]);
-    setAiSource("");
     setManualRows([]);
     setManualLbs("");
-    setLockedTypes([]);
-    stopLivePreview();
   };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <SectionTitle title="Post Listing" subtitle="Household or small business pickup request" />
+      <Text style={styles.title}>Post Recyclables</Text>
+      <Text style={styles.subtitle}>Help drivers optimize their route by listing your items.</Text>
 
-      <Card>
-        <Text style={styles.label}>Listing Type</Text>
-        <View style={styles.toggleRow}>
-          {["household", "business"].map((kind) => (
-            <Pressable
-              key={kind}
-              style={[styles.toggle, form.listing_kind === kind ? styles.toggleActive : null]}
-              onPress={() => setForm((prev) => ({ ...prev, listing_kind: kind }))}
-            >
-              <Text style={form.listing_kind === kind ? styles.toggleTextActive : styles.toggleText}>
-                {kind === "household" ? "Household" : "Business"}
-              </Text>
-            </Pressable>
-          ))}
+      <View style={styles.section}>
+        <View style={styles.sectionTitleRow}>
+          <MaterialCommunityIcons name="camera-outline" size={16} color={colors.primary} />
+          <SectionKicker title="Step 1 - Photo (AMD AI)" />
         </View>
-
-        <TextInput
-          value={form.household_name}
-          onChangeText={(text) => setForm((prev) => ({ ...prev, household_name: text }))}
-          placeholder="Name"
-          style={styles.input}
-        />
-        <TextInput
-          value={form.address}
-          onChangeText={(text) => setForm((prev) => ({ ...prev, address: text }))}
-          placeholder="Address"
-          style={styles.input}
-        />
-        <TextInput
-          value={form.phone}
-          onChangeText={(text) => setForm((prev) => ({ ...prev, phone: text }))}
-          placeholder="Phone"
-          style={styles.input}
-        />
-        <TextInput
-          value={form.notes}
-          onChangeText={(text) => setForm((prev) => ({ ...prev, notes: text }))}
-          placeholder="Notes"
-          multiline
-          style={[styles.input, styles.multiline]}
-        />
-      </Card>
-
-      <Card>
-        <Text style={styles.subTitle}>AI Classify (Photo)</Text>
-        <View style={styles.captureModeRow}>
-          {["photo", "live"].map((mode) => (
-            <Pressable
-              key={mode}
-              style={[
-                styles.captureModeToggle,
-                captureMode === mode ? styles.captureModeToggleActive : null,
-                mode === "live" && !liveSupported ? styles.captureModeToggleDisabled : null,
-              ]}
-              onPress={() => {
-                if (mode === "live" && !liveSupported) return;
-                setCaptureMode(mode);
-              }}
-            >
-              <Text style={captureMode === mode ? styles.captureModeTextActive : styles.captureModeText}>
-                {mode === "photo" ? "Photo Upload" : liveSupported ? "Live AI Preview" : "Live AI (Unavailable)"}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-
-        {captureMode === "photo" ? (
-          <>
-            {imageUri ? <Image source={{ uri: imageUri }} style={styles.preview} /> : null}
-            <PrimaryButton
-              title={loadingClassify ? "Classifying..." : "Pick Image and Classify"}
-              onPress={pickAndClassifyImage}
-              loading={loadingClassify}
-              disabled={loadingClassify}
-            />
-          </>
-        ) : (
-          <>
-            {cameraPermission?.granted ? (
-              <CameraView
-                ref={cameraRef}
-                style={styles.cameraPreview}
-                facing="back"
-                onCameraReady={() => setCameraReady(true)}
-                onMountError={(event) => {
-                  setCameraReady(false);
-                  setMessage(`Camera mount failed: ${event?.nativeEvent?.message || "Unknown camera error"}`);
-                }}
-              />
+        <Card style={styles.photoCard}>
+          <Pressable style={styles.photoDrop} onPress={pickAndClassifyImage}>
+            {imageUri ? (
+              <Image source={{ uri: imageUri }} style={styles.preview} />
             ) : (
-              <View style={styles.permissionBox}>
-                <Text style={styles.permissionText}>Camera permission required for live preview.</Text>
-                <SecondaryButton title="Enable Camera" onPress={requestCameraPermission} />
+              <View style={styles.photoPlaceholder}>
+                <View style={styles.photoIconWrap}>
+                  <MaterialCommunityIcons name="camera-outline" size={34} color={colors.primary} />
+                </View>
+                <Text style={styles.photoTitle}>{loadingClassify ? "Analyzing image..." : "Drop photo or tap to upload"}</Text>
+                <Text style={styles.photoSubtitle}>Cardboard, cans, bottles, e-waste, metals</Text>
               </View>
             )}
-            <View style={styles.liveButtonRow}>
-              <PrimaryButton
-                title={liveRunning ? "Stop Live Preview" : startingLive ? "Starting Live Preview..." : "Start Live Preview"}
-                onPress={liveRunning ? stopLivePreview : startLivePreview}
-                loading={startingLive}
-                disabled={
-                  loadingClassify ||
-                  startingLive ||
-                  (cameraPermission?.granted && !cameraReady && !liveRunning)
-                }
-              />
-              <SecondaryButton title="Reset AI Suggestions" onPress={resetAiSuggestions} />
-            </View>
-            <Text style={styles.liveHint}>
-              Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
-            </Text>
-            <View style={styles.flowCard}>
-              <Text style={styles.flowTitle}>Live Flow</Text>
-              <View style={styles.flowRow}>
-                <View style={[styles.flowPill, liveFlowStage !== "idle" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Start</Text>
-                </View>
-                <View style={[styles.flowPill, liveFlowStage === "scanning" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Detect</Text>
-                </View>
-                <View style={[styles.flowPill, liveFlowStage === "review" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Confirm</Text>
-                </View>
-                <View style={[styles.flowPill, liveFlowStage === "decision" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Continue</Text>
-                </View>
-              </View>
-              <Text style={styles.flowCaption}>{liveFlowMessage}</Text>
-            </View>
-            {pendingDetection ? (
-              <View style={styles.confirmBox}>
-                <Text style={styles.confirmTitle}>Detected Item</Text>
-                <Text style={styles.confirmText}>
-                  {materials[pendingDetection.type]?.emoji || "♻️"} {pendingDetection.type} - {Number(pendingDetection.lbs || 0).toFixed(1)} lbs
-                </Text>
-                <Text style={styles.confirmText}>Add this item to the listing?</Text>
-                <View style={styles.confirmActions}>
-                  <PrimaryButton title="Add Item" onPress={confirmAddDetected} />
-                  <SecondaryButton title="Skip Item" onPress={skipDetected} />
-                </View>
-              </View>
-            ) : null}
-            {scanDecisionPromptVisible ? (
-              <View style={styles.confirmBox}>
-                <Text style={styles.confirmTitle}>Continue Live Scan?</Text>
-                <View style={styles.confirmActions}>
-                  <PrimaryButton title="Keep Scanning" onPress={resumeScanning} />
-                  <SecondaryButton title="End Live Preview" onPress={stopLivePreview} />
-                </View>
-              </View>
-            ) : null}
-          </>
-        )}
-        {aiMaterials.length ? (
-          <View style={styles.materialList}>
-            <Text style={styles.sourceTag}>Source: {aiSource || "unknown"}</Text>
-            {aiMaterials.map((m, idx) => (
-              <Text style={styles.materialRow} key={`${m.type}-${idx}`}>
-                {materials[m.type]?.emoji || "♻️"} {m.type} - {Number(m.lbs).toFixed(1)} lbs
-              </Text>
-            ))}
-          </View>
-        ) : null}
-      </Card>
-
-      <Card>
-        <Text style={styles.subTitle}>Manual Materials</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalList}>
-          {materialKeys.map((key) => (
-            <Pressable
-              key={key}
-              style={[styles.chip, manualType === key ? styles.chipActive : null]}
-              onPress={() => setManualType(key)}
-            >
-              <Text style={manualType === key ? styles.chipTextActive : styles.chipText}>
-                {materials[key]?.emoji || "♻️"} {key}
-              </Text>
-            </Pressable>
-          ))}
-        </ScrollView>
-        <View style={styles.inlineInputs}>
-          <TextInput
-            value={manualLbs}
-            onChangeText={setManualLbs}
-            keyboardType="decimal-pad"
-            placeholder="Lbs"
-            style={[styles.input, styles.inlineInput]}
+          </Pressable>
+          <PrimaryButton
+            title={loadingClassify ? "Classifying..." : "Pick Image and Classify"}
+            onPress={pickAndClassifyImage}
+            loading={loadingClassify}
+            disabled={loadingClassify}
           />
-          <PrimaryButton title="Add" onPress={addManualRow} />
-        </View>
-        {manualRows.map((row) => (
-          <View key={row.id} style={styles.manualRow}>
-            <Text style={styles.manualText}>
-              {materials[row.type]?.emoji || "♻️"} {row.type} - {row.lbs.toFixed(1)} lbs
-            </Text>
-            <TextInput
-              value={String(row.lbs)}
-              onChangeText={(text) => updateManualRowLbs(row.id, text)}
-              keyboardType="decimal-pad"
-              style={styles.manualLbsInput}
-            />
-            <SecondaryButton title="Remove" onPress={() => removeManualRow(row.id)} />
-          </View>
-        ))}
-      </Card>
+          {aiMaterials.length ? (
+            <View style={styles.aiList}>
+              {aiMaterials.map((item, index) => (
+                <View key={`${item.type}-${index}`} style={styles.aiRow}>
+                  <Text style={styles.aiText}>
+                    {materials[item.type]?.emoji || "♻️"} {item.type}
+                  </Text>
+                  <Text style={styles.aiValue}>{Number(item.lbs || 0).toFixed(1)} lbs</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </Card>
+      </View>
 
-      {message ? <Text style={styles.message}>{message}</Text> : null}
+      <View style={styles.section}>
+        <View style={styles.sectionTitleRow}>
+          <MaterialCommunityIcons name="account-outline" size={16} color={colors.primary} />
+          <SectionKicker title="Step 2 - Your Details" />
+        </View>
+        <Card>
+          <View style={styles.inlineRow}>
+            <View style={styles.inlineCol}>
+              <Text style={styles.label}>POSTING AS</Text>
+              <View style={styles.kindSwitch}>
+                {["household", "business"].map((kind) => {
+                  const active = form.listing_kind === kind;
+                  return (
+                    <Pressable
+                      key={kind}
+                      style={[styles.kindButton, active ? styles.kindButtonActive : null]}
+                      onPress={() => setForm((prev) => ({ ...prev, listing_kind: kind }))}
+                    >
+                      <Text style={[styles.kindText, active ? styles.kindTextActive : null]}>
+                        {kind === "household" ? "Household" : "Business"}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
+          <Text style={styles.label}>NAME</Text>
+          <View style={styles.inputWrap}>
+            <MaterialCommunityIcons name="account-outline" size={20} color={colors.muted} />
+            <TextInput
+              value={form.household_name}
+              onChangeText={(text) => setForm((prev) => ({ ...prev, household_name: text }))}
+              placeholder="Your name"
+              placeholderTextColor={PLACEHOLDER}
+              style={styles.input}
+            />
+          </View>
+
+          <Text style={styles.label}>PICKUP ADDRESS</Text>
+          <View style={styles.inputWrap}>
+            <MaterialCommunityIcons name="map-marker-outline" size={20} color={colors.muted} />
+            <TextInput
+              value={form.address}
+              onChangeText={(text) => setForm((prev) => ({ ...prev, address: text }))}
+              placeholder="123 Eco St, Santa Clara"
+              placeholderTextColor={PLACEHOLDER}
+              style={styles.input}
+            />
+          </View>
+
+          <Text style={styles.label}>PHONE NUMBER</Text>
+          <View style={styles.inputWrap}>
+            <MaterialCommunityIcons name="phone-outline" size={20} color={colors.muted} />
+            <TextInput
+              value={form.phone}
+              onChangeText={(text) => setForm((prev) => ({ ...prev, phone: text }))}
+              placeholder="(555) 000-0000"
+              placeholderTextColor={PLACEHOLDER}
+              keyboardType="phone-pad"
+              style={styles.input}
+            />
+          </View>
+
+          <Text style={styles.label}>DRIVER NOTES</Text>
+          <View style={[styles.inputWrap, styles.notesWrap]}>
+            <MaterialCommunityIcons name="note-text-outline" size={20} color={colors.muted} style={styles.notesIcon} />
+            <TextInput
+              value={form.notes}
+              onChangeText={(text) => setForm((prev) => ({ ...prev, notes: text }))}
+              placeholder="e.g. Gate code, specific location"
+              placeholderTextColor={PLACEHOLDER}
+              multiline
+              style={[styles.input, styles.notesInput]}
+            />
+          </View>
+        </Card>
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionTitleRow}>
+          <MaterialCommunityIcons name="plus" size={18} color={colors.primary} />
+          <SectionKicker title="Or Add Materials Manually" />
+        </View>
+        <Card>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.materialChips}>
+            {materialKeys.map((key) => {
+              const active = manualType === key;
+              return (
+                <Pressable
+                  key={key}
+                  style={[styles.chip, active ? styles.chipActive : null]}
+                  onPress={() => setManualType(key)}
+                >
+                  <Text style={[styles.chipText, active ? styles.chipTextActive : null]}>
+                    {materials[key]?.emoji || "♻️"} {materials[key]?.label || key}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <View style={styles.manualRow}>
+            <View style={[styles.inputWrap, styles.manualInputWrap]}>
+              <TextInput
+                value={manualLbs}
+                onChangeText={setManualLbs}
+                placeholder="lbs"
+                placeholderTextColor={PLACEHOLDER}
+                keyboardType="decimal-pad"
+                style={styles.input}
+              />
+            </View>
+            <Pressable onPress={addManualRow} style={styles.plusButton}>
+              <MaterialCommunityIcons name="plus" size={26} color={colors.primary} />
+            </Pressable>
+          </View>
+          {manualRows.length ? (
+            <View style={styles.manualList}>
+              {manualRows.map((row) => (
+                <View key={row.id} style={styles.manualItem}>
+                  <Text style={styles.manualText}>
+                    {materials[row.type]?.emoji || "♻️"} {materials[row.type]?.label || row.type} - {row.lbs.toFixed(1)} lbs
+                  </Text>
+                  <SecondaryButton title="Remove" onPress={() => removeManualRow(row.id)} />
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </Card>
+      </View>
+
+      {message ? (
+        <Text style={[styles.message, messageIsError ? styles.messageError : styles.messageSuccess]}>
+          {message}
+        </Text>
+      ) : null}
+
       <PrimaryButton
-        title={loadingSubmit ? "Posting..." : "Post Listing"}
+        title={loadingSubmit ? "Posting..." : "Post Listing to Map"}
         onPress={submitListing}
         loading={loadingSubmit}
         disabled={loadingSubmit}
@@ -785,251 +347,247 @@ export function PostScreen() {
 
 const styles = StyleSheet.create({
   container: {
-    padding: 14,
+    paddingHorizontal: 16,
+    paddingTop: 22,
     paddingBottom: 120,
-    backgroundColor: colors.bg,
+    backgroundColor: "transparent",
   },
-  label: {
+  title: {
     color: colors.ink,
-    marginBottom: 8,
-    fontWeight: "700",
+    fontSize: 46,
+    lineHeight: 50,
+    fontWeight: "800",
   },
-  toggleRow: {
+  subtitle: {
+    color: colors.muted,
+    fontSize: 18,
+    lineHeight: 29,
+    marginTop: 8,
+    maxWidth: "95%",
+  },
+  section: {
+    marginTop: 24,
+  },
+  sectionTitleRow: {
     flexDirection: "row",
-    gap: 8,
-    marginBottom: 10,
-  },
-  toggle: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    paddingVertical: 10,
     alignItems: "center",
-    backgroundColor: "#FCFBF6",
+    gap: 8,
   },
-  toggleActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
+  photoCard: {
+    gap: 12,
   },
-  toggleText: { color: colors.ink, fontWeight: "600" },
-  toggleTextActive: { color: "#fff", fontWeight: "700" },
-  input: {
+  photoDrop: {
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    marginBottom: 8,
-    backgroundColor: "#fff",
+    backgroundColor: colors.cardSoft,
+    minHeight: 240,
+    overflow: "hidden",
   },
-  multiline: {
-    minHeight: 70,
-    textAlignVertical: "top",
+  photoPlaceholder: {
+    minHeight: 240,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    paddingHorizontal: 24,
   },
-  subTitle: {
-    fontWeight: "700",
+  photoIconWrap: {
+    width: 94,
+    height: 94,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(0, 232, 122, 0.3)",
+    backgroundColor: "rgba(0, 232, 122, 0.08)",
+  },
+  photoTitle: {
     color: colors.ink,
-    marginBottom: 10,
+    fontSize: 34,
+    lineHeight: 38,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  photoSubtitle: {
+    color: colors.muted,
+    fontSize: 16,
+    textAlign: "center",
   },
   preview: {
     width: "100%",
-    height: 170,
-    borderRadius: 12,
-    marginBottom: 10,
+    height: 260,
   },
-  cameraPreview: {
-    width: "100%",
-    height: 220,
-    borderRadius: 12,
-    marginBottom: 10,
-    overflow: "hidden",
-  },
-  captureModeRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 10,
-  },
-  captureModeToggle: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    paddingVertical: 8,
-    alignItems: "center",
-    backgroundColor: "#fff",
-  },
-  captureModeToggleActive: {
-    backgroundColor: "#EAF8F3",
-    borderColor: colors.primary,
-  },
-  captureModeToggleDisabled: {
-    opacity: 0.5,
-  },
-  captureModeText: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  captureModeTextActive: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  permissionBox: {
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 10,
-    backgroundColor: "#fff",
-  },
-  permissionText: {
-    color: colors.ink,
-    marginBottom: 8,
-    fontSize: 12,
-  },
-  liveButtonRow: {
-    gap: 8,
-  },
-  liveHint: {
-    marginTop: 8,
-    color: colors.muted,
-    fontSize: 11,
-  },
-  flowCard: {
-    marginTop: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    backgroundColor: "#fff",
-  },
-  flowTitle: {
-    color: colors.ink,
-    fontSize: 13,
-    fontWeight: "700",
-    marginBottom: 8,
-  },
-  flowRow: {
-    flexDirection: "row",
-    gap: 6,
-    marginBottom: 6,
-  },
-  flowPill: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 999,
-    paddingVertical: 5,
-    alignItems: "center",
-    backgroundColor: "#FCFBF6",
-  },
-  flowPillActive: {
-    borderColor: colors.primary,
-    backgroundColor: "#EAF8F3",
-  },
-  flowPillText: {
-    color: colors.ink,
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  flowCaption: {
-    color: colors.muted,
-    fontSize: 11,
-  },
-  confirmBox: {
-    marginTop: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 10,
-    backgroundColor: "#FCFBF6",
-    gap: 6,
-  },
-  confirmTitle: {
-    color: colors.ink,
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  confirmText: {
-    color: colors.ink,
-    fontSize: 13,
-  },
-  confirmActions: {
-    gap: 8,
+  aiList: {
     marginTop: 4,
+    gap: 8,
   },
-  materialList: {
-    marginTop: 10,
-    gap: 4,
+  aiRow: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    backgroundColor: colors.cardSoft,
   },
-  sourceTag: {
-    color: colors.muted,
-    marginBottom: 4,
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  materialRow: {
+  aiText: {
     color: colors.ink,
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  aiValue: {
+    color: colors.primary,
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  inlineRow: {
+    marginBottom: 12,
+  },
+  inlineCol: {
+    flex: 1,
+  },
+  label: {
+    marginBottom: 8,
+    color: colors.muted,
+    fontWeight: "800",
+    letterSpacing: 2.5,
     fontSize: 13,
   },
-  horizontalList: {
-    marginBottom: 8,
+  kindSwitch: {
+    flexDirection: "row",
+    padding: 4,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.cardSoft,
+    marginBottom: 14,
+  },
+  kindButton: {
+    flex: 1,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 12,
+  },
+  kindButtonActive: {
+    backgroundColor: "rgba(0, 232, 122, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(0, 232, 122, 0.35)",
+  },
+  kindText: {
+    color: colors.muted,
+    fontWeight: "800",
+    fontSize: 16,
+  },
+  kindTextActive: {
+    color: colors.primary,
+  },
+  inputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 17,
+    backgroundColor: colors.cardSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    marginBottom: 14,
+  },
+  input: {
+    flex: 1,
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  notesWrap: {
+    minHeight: 140,
+    alignItems: "flex-start",
+  },
+  notesIcon: {
+    marginTop: 2,
+  },
+  notesInput: {
+    minHeight: 120,
+    textAlignVertical: "top",
+  },
+  materialChips: {
+    marginBottom: 10,
   },
   chip: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 20,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: colors.cardSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
     marginRight: 8,
-    backgroundColor: "#fff",
   },
   chipActive: {
-    borderColor: colors.primary,
-    backgroundColor: "#EAF8F3",
+    borderColor: "rgba(0, 232, 122, 0.35)",
+    backgroundColor: "rgba(0, 232, 122, 0.15)",
   },
-  chipText: { color: colors.ink, fontSize: 12 },
-  chipTextActive: { color: colors.primary, fontSize: 12, fontWeight: "700" },
-  inlineInputs: {
+  chipText: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  chipTextActive: {
+    color: colors.primary,
+  },
+  manualRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
   },
-  inlineInput: {
+  manualInputWrap: {
     flex: 1,
     marginBottom: 0,
   },
-  manualRow: {
-    marginTop: 8,
-    paddingTop: 8,
+  plusButton: {
+    width: 58,
+    height: 58,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(0, 232, 122, 0.3)",
+    backgroundColor: "rgba(0, 232, 122, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  manualList: {
+    marginTop: 12,
+    gap: 10,
+  },
+  manualItem: {
     borderTopWidth: 1,
     borderTopColor: colors.border,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    paddingTop: 10,
   },
   manualText: {
-    flex: 1,
-    marginRight: 8,
     color: colors.ink,
-    fontSize: 13,
-  },
-  manualLbsInput: {
-    width: 64,
-    marginRight: 6,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    backgroundColor: "#fff",
-    fontSize: 12,
+    fontSize: 15,
+    fontWeight: "700",
+    marginBottom: 8,
   },
   message: {
-    marginBottom: 8,
-    color: colors.ink,
-    fontSize: 13,
+    marginTop: 8,
+    marginBottom: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  messageError: {
+    color: colors.danger,
+    borderColor: "rgba(255, 107, 107, 0.35)",
+    backgroundColor: "rgba(255, 107, 107, 0.12)",
+  },
+  messageSuccess: {
+    color: colors.primary,
+    borderColor: "rgba(0, 232, 122, 0.35)",
+    backgroundColor: "rgba(0, 232, 122, 0.12)",
   },
 });

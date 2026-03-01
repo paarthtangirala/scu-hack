@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -9,9 +10,10 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { api } from "../services/api";
 import { GOOGLE_MAPS_API_KEY } from "../config";
-import { Card, PrimaryButton, SectionTitle, SecondaryButton, StatPill, colors } from "../components/ui";
+import { Card, PrimaryButton, SectionKicker, SecondaryButton, StatPill, colors } from "../components/ui";
 
 let MapViewComponent = null;
 let MarkerComponent = null;
@@ -26,14 +28,16 @@ if (Platform.OS !== "web") {
 }
 
 const OBJECTIVES = [
-  { key: "lbs", label: "Max lbs/min" },
-  { key: "value", label: "Max $/min" },
+  { key: "value", label: "Max Earnings", icon: "currency-usd" },
+  { key: "lbs", label: "Max Impact", icon: "weight-kilogram" },
 ];
 const MAX_MINUTES_OPTIONS = [60, 120, 180, 240];
 const CAPACITY_OPTIONS = [500, 1000, 2000];
 const DRIVER_START = { latitude: 37.3541, longitude: -121.9552 };
 const GOOGLE_DIRECTIONS_BASE_URL = "https://maps.googleapis.com/maps/api/directions/json";
 const GOOGLE_DIRECTIONS_MAX_STOPS = 23;
+const EXTERNAL_NAV_MAX_STOPS = 10;
+const PLACEHOLDER_COLOR = "rgba(120, 145, 122, 0.8)";
 
 function nextRequestId() {
   return `mobile-accept-${Date.now()}`;
@@ -116,6 +120,34 @@ function computeRouteRegion(points) {
     latitudeDelta: Math.max(0.03, (maxLat - minLat) * 1.8),
     longitudeDelta: Math.max(0.03, (maxLng - minLng) * 1.8),
   };
+}
+
+function buildExternalNavigationUrl(stops) {
+  const navStops = (stops || [])
+    .map(stopCoordinate)
+    .filter(Boolean)
+    .slice(0, EXTERNAL_NAV_MAX_STOPS);
+  if (!navStops.length) return "";
+
+  if (Platform.OS === "ios") {
+    const daddr = navStops.map((point) => `${point.latitude},${point.longitude}`).join(" to:");
+    return `http://maps.apple.com/?saddr=Current%20Location&daddr=${encodeURIComponent(daddr)}&dirflg=d`;
+  }
+
+  const origin = `${DRIVER_START.latitude},${DRIVER_START.longitude}`;
+  const destination = navStops[navStops.length - 1];
+  const waypoints = navStops
+    .slice(0, navStops.length - 1)
+    .map((point) => `${point.latitude},${point.longitude}`)
+    .join("|");
+  const params = new URLSearchParams({
+    api: "1",
+    origin,
+    destination: `${destination.latitude},${destination.longitude}`,
+    travelmode: "driving",
+  });
+  if (waypoints) params.append("waypoints", waypoints);
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
 export function DriverScreen() {
@@ -310,18 +342,49 @@ export function DriverScreen() {
   );
   const mapRegion = useMemo(() => computeRouteRegion(mapCoordinates), [mapCoordinates]);
   const availableCount = useMemo(() => listings.filter((item) => item.status === "available").length, [listings]);
+  const openExternalNavigation = useCallback(async () => {
+    const url = buildExternalNavigationUrl(routeStops);
+    if (!url) {
+      setMessage("Build a route first to open turn-by-turn navigation.");
+      return;
+    }
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        setMessage("Could not open Maps on this device.");
+        return;
+      }
+      await Linking.openURL(url);
+      if (routeStops.length > EXTERNAL_NAV_MAX_STOPS) {
+        setMessage(
+          `Opened Maps with first ${EXTERNAL_NAV_MAX_STOPS} stops to keep navigation stable. Continue remaining stops from Route Stops list.`,
+        );
+      }
+    } catch (error) {
+      setMessage(`Failed to open navigation app: ${error?.message || "unknown error"}`);
+    }
+  }, [routeStops]);
 
   return (
     <ScrollView
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
     >
-      <SectionTitle title="Driver Dashboard" subtitle="Build, accept, and execute optimized routes" />
+      <Text style={styles.pageTitle}>Driver Dashboard</Text>
+      <Text style={styles.pageSubtitle}>Find the best route for your truck.</Text>
 
       <Card>
+        <View style={styles.kickerRow}>
+          <MaterialCommunityIcons name="chart-box-outline" size={16} color={colors.primary} />
+          <SectionKicker title="Optimization Goal" />
+        </View>
         <Text style={styles.label}>Driver Name</Text>
-        <TextInput value={driverName} onChangeText={setDriverName} style={styles.input} />
-        <Text style={styles.label}>Optimize Objective</Text>
+        <TextInput
+          value={driverName}
+          onChangeText={setDriverName}
+          placeholderTextColor={PLACEHOLDER_COLOR}
+          style={styles.input}
+        />
         <View style={styles.optionRow}>
           {OBJECTIVES.map((item) => (
             <Pressable
@@ -329,11 +392,20 @@ export function DriverScreen() {
               style={[styles.option, objective === item.key ? styles.optionActive : null]}
               onPress={() => setObjective(item.key)}
             >
+              <MaterialCommunityIcons
+                name={item.icon}
+                size={16}
+                color={objective === item.key ? colors.primary : colors.muted}
+              />
               <Text style={objective === item.key ? styles.optionTextActive : styles.optionText}>{item.label}</Text>
             </Pressable>
           ))}
         </View>
 
+        <View style={styles.kickerRow}>
+          <MaterialCommunityIcons name="clock-outline" size={16} color={colors.primary} />
+          <SectionKicker title="Route Time Budget" />
+        </View>
         <Text style={styles.label}>Max Minutes</Text>
         <View style={styles.optionRow}>
           {MAX_MINUTES_OPTIONS.map((value) => (
@@ -347,6 +419,10 @@ export function DriverScreen() {
           ))}
         </View>
 
+        <View style={styles.kickerRow}>
+          <MaterialCommunityIcons name="truck-outline" size={16} color={colors.primary} />
+          <SectionKicker title="Truck Capacity" />
+        </View>
         <Text style={styles.label}>Truck Capacity (lbs)</Text>
         <View style={styles.optionRow}>
           {CAPACITY_OPTIONS.map((value) => (
@@ -447,6 +523,13 @@ export function DriverScreen() {
               iOS Expo Go uses Apple basemap. For full Google basemap on iOS, use an EAS iOS development build.
             </Text>
           ) : null}
+          <View style={styles.mapActions}>
+            <PrimaryButton
+              title={Platform.OS === "ios" ? "Open Full Trip in Apple Maps" : "Open Trip in Maps"}
+              onPress={openExternalNavigation}
+              disabled={!routeStops.length}
+            />
+          </View>
           <Text style={styles.mapCaption}>
             {routeMapMessage || "Showing optimized stop geometry. Google Directions API is used when key is configured."}
           </Text>
@@ -484,23 +567,49 @@ export function DriverScreen() {
 
 const styles = StyleSheet.create({
   container: {
-    padding: 14,
+    paddingHorizontal: 16,
+    paddingTop: 22,
     paddingBottom: 120,
-    backgroundColor: colors.bg,
+    backgroundColor: "transparent",
+  },
+  pageTitle: {
+    color: colors.ink,
+    fontSize: 46,
+    lineHeight: 50,
+    fontWeight: "800",
+  },
+  pageSubtitle: {
+    color: colors.muted,
+    fontSize: 18,
+    lineHeight: 29,
+    marginTop: 8,
+    marginBottom: 18,
+    maxWidth: "95%",
+  },
+  kickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 4,
   },
   label: {
     color: colors.ink,
     fontWeight: "700",
-    marginBottom: 6,
+    marginBottom: 8,
+    fontSize: 13,
+    letterSpacing: 1.8,
   },
   input: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     marginBottom: 10,
-    backgroundColor: "#fff",
+    backgroundColor: colors.cardSoft,
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "500",
   },
   optionRow: {
     flexDirection: "row",
@@ -511,26 +620,31 @@ const styles = StyleSheet.create({
   option: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    backgroundColor: "#fff",
+    borderRadius: 15,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    backgroundColor: colors.cardSoft,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
   },
   optionActive: {
-    borderColor: colors.primary,
-    backgroundColor: "#EAF8F3",
+    borderColor: "rgba(0, 232, 122, 0.35)",
+    backgroundColor: "rgba(0, 232, 122, 0.15)",
   },
   optionText: {
     color: colors.ink,
-    fontSize: 12,
+    fontSize: 15,
+    fontWeight: "700",
   },
   optionTextActive: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 15,
+    fontWeight: "800",
   },
   pillRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 8,
     marginBottom: 10,
   },
@@ -540,35 +654,41 @@ const styles = StyleSheet.create({
   helperText: {
     marginTop: 8,
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 18,
   },
   acceptedText: {
     marginTop: 8,
     color: colors.primary,
-    fontWeight: "700",
+    fontWeight: "800",
+    fontSize: 16,
   },
   map: {
     height: 250,
-    borderRadius: 12,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: "hidden",
   },
   mapUnsupported: {
-    borderRadius: 12,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 10,
-    backgroundColor: "#FCFBF6",
+    padding: 12,
+    backgroundColor: colors.cardSoft,
   },
   mapCaption: {
     marginTop: 8,
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  mapActions: {
+    marginTop: 10,
   },
   stopsTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 28,
+    fontWeight: "800",
     color: colors.ink,
     marginBottom: 8,
   },
@@ -580,16 +700,20 @@ const styles = StyleSheet.create({
   },
   stopTitle: {
     color: colors.ink,
-    fontWeight: "700",
+    fontWeight: "800",
+    fontSize: 18,
     marginBottom: 4,
   },
   stopMeta: {
     color: colors.muted,
     marginBottom: 8,
-    fontSize: 12,
+    fontSize: 13,
   },
   message: {
     marginTop: 8,
+    marginBottom: 8,
     color: colors.ink,
+    fontWeight: "700",
+    fontSize: 14,
   },
 });

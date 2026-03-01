@@ -1,4 +1,4 @@
-# RecycleRun — Twilio + ElevenLabs Telephony: Rehearsal Matrix & Drill Guide
+# Bin2Bucks — Twilio + ElevenLabs Telephony: Rehearsal Matrix & Drill Guide
 **Branch:** feat/sara/ph4-twilio-elevenlabs-rehearsal
 **Owner:** Sara
 **Covers:** `backend/services/voice.py`, `backend/routes/optimize.py`, `frontend/src/components/shared/NotificationOverlay.jsx`, `frontend/src/hooks/useRoute.js`
@@ -51,7 +51,7 @@
 | Dimension | Detail |
 |-----------|--------|
 | **Trigger** | Any of: (a) `ELEVENLABS_API_KEY` missing, (b) ElevenLabs returns non-200, (c) ElevenLabs throws, (d) any Twilio var missing. Voice.py prints `[DEMO CALL]` to console. |
-| **`voice.py` returns** | `{"success": True, "mode": "demo", "message": "Hello! This is RecycleRun..."}` |
+| **`voice.py` returns** | `{"success": True, "mode": "demo", "message": "Hello! This is Bin2Bucks..."}` |
 | **`api.js` receives** | `{ ok: true, data: { success: true, notifications_sent: N, notifications: [{..., notification: {success: true, mode: "demo", message: "..."}}] } }` |
 | **`NotificationOverlay` renders** | Amber `📞 Demo call` label per household (any `mode !== 'live'`). Same overlay structure. No calls actually ring. |
 | **Presenter says** | *"Notifications are queued for every household on this route. In a full deploy, each one gets a real voice call — for today's demo we're showing the notification flow end to end."* |
@@ -72,7 +72,7 @@
 
 ### Script 1 — Live Mode (all credentials working)
 
-**Pre-condition:** `ELEVENLABS_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` all set in `recyclerun-team/.env`. Flask running. A real phone number is in at least one seed listing (or use a test number you own).
+**Pre-condition:** `ELEVENLABS_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` all set in `<repo-root>/.env`. Flask running. A real phone number is in at least one seed listing (or use a test number you own).
 
 **Timing target:** 45 seconds from "tap Accept Route" to "call ends."
 
@@ -103,7 +103,7 @@
 
 **Say (before answering):** *"Hear that? That's ElevenLabs AI voice placed by Twilio — not pre-recorded, generated fresh with the driver's name and exact ETA."*
 
-**[T+25s] — Call plays:** *"Hello! This is RecycleRun. [Driver Name] has accepted your recycling pickup and will arrive in approximately [N] minutes. Please have your recyclables ready at the curb. You're helping keep the Bay Area green — thank you!"*
+**[T+25s] — Call plays:** *"Hello! This is Bin2Bucks. [Driver Name] has accepted your recycling pickup and will arrive in approximately [N] minutes. Please have your recyclables ready at the curb. You're helping keep the Bay Area green — thank you!"*
 
 **Say (after call):** *"One tap. Every household notified. Driver is already on their way."*
 
@@ -162,7 +162,7 @@ Run this checklist immediately before judging. Takes ≤ 3 minutes.
 ### Step 1 — Check which env vars are set (30 seconds)
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 grep -E "ELEVENLABS_API_KEY|TWILIO_ACCOUNT_SID|TWILIO_AUTH_TOKEN|TWILIO_PHONE_NUMBER" .env
 ```
 

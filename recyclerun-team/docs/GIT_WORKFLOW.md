@@ -1,4 +1,4 @@
-# RecycleRun Git Workflow
+# Bin2Bucks Git Workflow
 
 This is the team-standard workflow for hackathon speed without breaking demos.
 

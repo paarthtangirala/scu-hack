@@ -1,4 +1,4 @@
-# RecycleRun — Full Regression Report
+# Bin2Bucks — Full Regression Report
 **Date:** 2026-02-28
 **Branch:** feat/sara/ph5-regression-timing-report (based on pre-master)
 **Tester:** Sara

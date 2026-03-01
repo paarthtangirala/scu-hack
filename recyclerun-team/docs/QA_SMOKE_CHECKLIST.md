@@ -1,4 +1,4 @@
-# RecycleRun — QA Smoke Checklist
+# Bin2Bucks — QA Smoke Checklist
 **Branch:** feat/sara/ph1-qa-smoke-checklist
 **Owner:** Sara
 **Target run time:** < 10 minutes
@@ -244,7 +244,7 @@ curl -s -X POST http://localhost:5000/api/accept-route \
       "notification": {
         "success": true,
         "mode": "demo",
-        "message": "Hello! This is RecycleRun..."
+        "message": "Hello! This is Bin2Bucks..."
       }
     }
   ]

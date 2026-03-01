@@ -1,4 +1,4 @@
-# RecycleRun Mobile (Expo Go)
+# Bin2Bucks Mobile (Expo Go)
 
 This project now includes a native mobile client in `mobile/` built with Expo.
 
@@ -11,7 +11,7 @@ This project now includes a native mobile client in `mobile/` built with Expo.
 ## 1) Start Backend
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 pip install -r backend/requirements.txt
 python -m flask --app backend.app:create_app run --host 0.0.0.0 --port 5050
 ```
@@ -21,7 +21,7 @@ Backend runs on `http://localhost:5050`.
 ## 2) Configure Mobile API URL
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 ./scripts/mobile/use-lan-api.sh
 ```
 
@@ -35,7 +35,7 @@ This auto-detects your laptop LAN IP and writes `mobile/.env` with:
 ## 3) Start Expo
 
 ```bash
-cd recyclerun-team/mobile
+cd mobile
 npm install
 npm start
 ```
@@ -46,7 +46,7 @@ Scan the QR code from Expo CLI with Expo Go.
 ## 4) One-Command Mobile Setup (Recommended)
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 ./scripts/mobile/start-expo-lan.sh
 ```
 
@@ -60,7 +60,7 @@ This:
 If local network routing is unreliable, switch mobile to a stable hosted API:
 
 ```bash
-cd recyclerun-team
+cd <repo-root>
 ./scripts/mobile/use-prod-api.sh https://<your-hosted-api-domain>/api
 cd mobile
 npm start

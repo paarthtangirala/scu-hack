@@ -1,4 +1,4 @@
-# ♻️ RecycleRun
+# ♻️ Bin2Bucks
 ### Recycle Smarter. Earn More.
 **Hack for Humanity 2026 · Santa Clara University · Feb 28 – Mar 1**
 
@@ -31,7 +31,7 @@
 
 ```bash
 # Terminal 1 — Backend
-cd recyclerun-team
+cd <repo-root>
 pip install -r backend/requirements.txt
 python -m flask --app backend.app:create_app run --host 0.0.0.0 --port 5050
 # → http://localhost:5050
@@ -43,7 +43,7 @@ npm run dev
 # → http://localhost:5173
 
 # Terminal 3 — Mobile (Expo Go)
-cd recyclerun-team/mobile
+cd mobile
 npm install
 npm start
 # Scan QR in Expo Go
@@ -53,7 +53,8 @@ npm start
 For full sponsor integrations, copy `.env.example` to `.env` and add keys.
 
 For permanent mobile reliability (no LAN/tunnel dependency), deploy backend to a managed host and point mobile to production API:
-- See [Production Deployment](/Users/paarthtangirala/Documents/Documents-MacBookAir/GitHub/SCU%20hack/recyclerun-team/docs/PRODUCTION_DEPLOYMENT.md).
+- See [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md).
+- See [Startup + Recovery Runbook](docs/STARTUP_RECOVERY_RUNBOOK.md).
 
 ---
 
@@ -103,6 +104,12 @@ Flask Backend
 ```bash
 cd backend
 pytest tests/ -v
+```
+
+Full-system reliability gate (backend + frontend + mobile + API health soak):
+
+```bash
+bash scripts/qa/full-system-check.sh
 ```
 
 ---

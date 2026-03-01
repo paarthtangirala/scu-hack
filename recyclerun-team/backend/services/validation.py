@@ -181,7 +181,7 @@ def validate_accept_route_payload(data: Any) -> Tuple[Dict[str, Any] | None, Lis
     if not isinstance(data, dict):
         return None, [{"field": "body", "message": "JSON object is required"}]
 
-    driver_name = _as_string(data.get("driver_name")) or "your RecycleRun driver"
+    driver_name = _as_string(data.get("driver_name")) or "your Bin2Bucks driver"
     raw_stops = data.get("stops")
     if not isinstance(raw_stops, list) or not raw_stops:
         return None, [{"field": "stops", "message": "At least one stop is required"}]

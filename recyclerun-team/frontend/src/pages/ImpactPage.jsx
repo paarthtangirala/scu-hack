@@ -74,10 +74,10 @@ export function ImpactPage() {
         ))}
       </div>
       <div className="card">
-        <div style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>How RecycleRun Supports SB 1383</div>
+        <div style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>How Bin2Bucks Supports SB 1383</div>
         <div style={{ fontFamily: 'var(--mono)', fontSize: '0.88rem', color: 'var(--muted)', lineHeight: 1.9 }}>
           California's SB 1383 mandates 75% reduction in organic and recyclable waste sent to landfills.
-          RecycleRun captures recyclable overflow between weekly city pickup days — the cardboard from
+          Bin2Bucks captures recyclable overflow between weekly city pickup days — the cardboard from
           Amazon deliveries, aluminum from weekend parties, e-waste from home offices. Every pound
           collected is a pound that doesn't generate methane in a landfill.
         </div>

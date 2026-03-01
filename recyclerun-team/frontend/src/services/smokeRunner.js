@@ -1,5 +1,5 @@
 /**
- * Smoke test runner for RecycleRun backend.
+ * Smoke test runner for Bin2Bucks backend.
  * Validates all 5 API endpoints; activates demo-data fallback on network errors.
  * Owner: Sara
  *

@@ -21,7 +21,7 @@ To keep this believable, the app must explicitly avoid "recycling scavenging" an
 
 - **No curbside scavenging**: Taking material out of curbside bins is typically prohibited by city ordinances and/or treated as theft of service. Your model should assume pickups are **posted by the household/business** and left out with consent.
 - **Exclusive hauling/franchise realities**: Many cities grant exclusive collection rights for commercial waste/recycling. If you want business cardboard pickups, assume:
-  - RecycleRun is a **subcontractor to the franchised hauler**, or
+  - Bin2Bucks is a **subcontractor to the franchised hauler**, or
   - you only operate where it is explicitly allowed, or
   - you only pick up materials under a contract that the city/hauler permits.
 - **E-waste constraints**: Electronics should go to approved collection/recycling channels. In reality, e-waste is usually a **service**, not a commodity (especially CRTs).
@@ -45,7 +45,7 @@ A believable model is:
 
 We implemented a realistic driver-day simulator at:
 
-- `/Users/paarthtangirala/Documents/Documents-MacBookAir/GitHub/SCU hack/recyclerun-team/backend/tools/simulate_driver_day.py`
+- `backend/tools/simulate_driver_day.py`
 
 It prints:
 
@@ -56,9 +56,9 @@ It prints:
 Run:
 
 ```bash
-python3 recyclerun-team/backend/tools/simulate_driver_day.py --days 200 --truck-capacity-lbs 500 --shift-minutes 360
-python3 recyclerun-team/backend/tools/simulate_driver_day.py --mock-drill --truck-capacity-lbs 500 --shift-minutes 360
-python3 recyclerun-team/backend/tools/simulate_driver_day.py --mock-drill --include-commercial --truck-capacity-lbs 500 --shift-minutes 360
+python3 backend/tools/simulate_driver_day.py --days 200 --truck-capacity-lbs 500 --shift-minutes 360
+python3 backend/tools/simulate_driver_day.py --mock-drill --truck-capacity-lbs 500 --shift-minutes 360
+python3 backend/tools/simulate_driver_day.py --mock-drill --include-commercial --truck-capacity-lbs 500 --shift-minutes 360
 ```
 
 ### What The Simulator Demonstrates
@@ -81,4 +81,3 @@ Implication:
   - bulk/move-out stops, or
   - commercial pickups, or
   - many more households, which raises miles + time and destroys profitability without fees.
-

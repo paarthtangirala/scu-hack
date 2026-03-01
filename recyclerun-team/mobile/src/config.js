@@ -2,7 +2,9 @@ import { NativeModules } from "react-native";
 
 const DEFAULT_API_PORT = "5050";
 const ENV_API_BASE_URL = String(process.env.EXPO_PUBLIC_API_BASE_URL || "").trim();
-const ENV_GOOGLE_MAPS_API_KEY = String(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || "").trim();
+const ENV_GOOGLE_MAPS_API_KEY = String(
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_KEY || "",
+).trim();
 const AUTO_LAN_ENABLED = String(process.env.EXPO_PUBLIC_AUTO_LAN || "1") !== "0";
 const API_PORT = String(process.env.EXPO_PUBLIC_API_PORT || DEFAULT_API_PORT).trim() || DEFAULT_API_PORT;
 
@@ -79,4 +81,4 @@ export const LIVE_PREVIEW_FRAME_INTERVAL_MS = Math.max(
   Number(process.env.EXPO_PUBLIC_LIVE_PREVIEW_FRAME_INTERVAL_MS || "1000"),
 );
 
-export const APP_NAME = "RecycleRun";
+export const APP_NAME = "Bin2Bucks";

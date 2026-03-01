@@ -121,7 +121,7 @@ async function request(path, options = {}) {
         ok: false,
         status: response.status,
         code: "invalid_json",
-        hint: "API returned non-JSON content. Verify API base points to the RecycleRun backend.",
+        hint: "API returned non-JSON content. Verify API base points to the Bin2Bucks backend.",
         error: `Invalid JSON response for ${path}`,
         data,
       };
@@ -152,7 +152,7 @@ export const api = {
       ok: false,
       status: response.status,
       code: "invalid_health_payload",
-      hint: "Unexpected /health payload. Confirm API base points to the RecycleRun backend.",
+      hint: "Unexpected /health payload. Confirm API base points to the Bin2Bucks backend.",
       error: "Health endpoint returned unexpected JSON shape.",
       data: response.data,
     };

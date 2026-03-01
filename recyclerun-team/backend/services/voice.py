@@ -25,7 +25,7 @@ class VoiceNotifier:
 
     def notify(self, phone: str, household_name: str, eta_minutes: int, driver_name: str) -> dict:
         message = (
-            f"Hello! This is RecycleRun. {driver_name} has accepted your recycling pickup "
+            f"Hello! This is Bin2Bucks. {driver_name} has accepted your recycling pickup "
             f"and will arrive in approximately {eta_minutes} minutes. "
             f"Please have your recyclables ready at the curb. "
             f"You're helping keep the Bay Area green — thank you!"

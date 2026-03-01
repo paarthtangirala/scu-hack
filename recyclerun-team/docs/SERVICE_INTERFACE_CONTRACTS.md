@@ -1,4 +1,4 @@
-# RecycleRun Service Interface Contracts
+# Bin2Bucks Service Interface Contracts
 
 Implementation-first service contracts used between backend and frontend.
 

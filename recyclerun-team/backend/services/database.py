@@ -72,8 +72,8 @@ SEED_DATA = [
 class ListingStore:
     def __init__(self, db_path: str | None = None):
         self._lock = threading.RLock()
-        configured_path = db_path or os.getenv("STORE_DB_PATH", "/tmp/recyclerun_store.sqlite3")
-        normalized_path = configured_path.strip() or "/tmp/recyclerun_store.sqlite3"
+        configured_path = db_path or os.getenv("STORE_DB_PATH", "/tmp/bin2bucks_store.sqlite3")
+        normalized_path = configured_path.strip() or "/tmp/bin2bucks_store.sqlite3"
         self._db_path = Path(normalized_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._seed_count = len(SEED_DATA)
