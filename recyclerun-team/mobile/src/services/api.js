@@ -15,6 +15,28 @@ function formatServerError(status, data) {
   return detail ? `${base}: ${detail}` : base;
 }
 
+function hintForServerStatus(status) {
+  if (status === 400 || status === 422) {
+    return "Request validation failed. Review required fields and value formats.";
+  }
+  if (status === 401 || status === 403) {
+    return "Request not authorized. Verify API credentials or access policy.";
+  }
+  if (status === 404) {
+    return "Endpoint not found. Verify backend route and API base URL.";
+  }
+  if (status === 409) {
+    return "Data conflict detected. Refresh and retry with the latest listing state.";
+  }
+  if (status === 429) {
+    return "Rate limit reached. Wait briefly, then retry.";
+  }
+  if (status >= 500) {
+    return "Backend/tunnel unavailable. Check server health and retry.";
+  }
+  return "Request failed. Verify payload and backend logs, then retry.";
+}
+
 function formatNetworkError(path, error) {
   if (error?.name === "AbortError") {
     return {
@@ -70,7 +92,7 @@ async function request(path, options = {}) {
         ok: false,
         status: response.status,
         code: "server_error",
-        hint: "Server rejected the request. Review input fields and try again.",
+        hint: hintForServerStatus(response.status),
         error: formatServerError(response.status, data),
         data,
       };
