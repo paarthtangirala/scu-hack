@@ -2,6 +2,8 @@
 AI vision classification — AMD primary.
 Owner: Soham
 """
+from __future__ import annotations
+
 import os, re, json
 import requests
 
