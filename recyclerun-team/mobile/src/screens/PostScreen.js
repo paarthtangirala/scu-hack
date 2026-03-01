@@ -57,8 +57,6 @@ export function PostScreen() {
   const [pendingDetection, setPendingDetection] = useState(null);
   const [scanDecisionPromptVisible, setScanDecisionPromptVisible] = useState(false);
   const [livePausedForReview, setLivePausedForReview] = useState(false);
-  const [lastPromptSignature, setLastPromptSignature] = useState("");
-  const [lastPromptAtMs, setLastPromptAtMs] = useState(0);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
   const liveSessionIdRef = useRef("");
@@ -234,6 +232,7 @@ export function PostScreen() {
     setLiveRunning(false);
     setStartingLive(false);
     setLivePausedForReview(false);
+    livePausedForReviewRef.current = false;
     setPendingDetection(null);
     setScanDecisionPromptVisible(false);
     frameBusyRef.current = false;
@@ -287,23 +286,18 @@ export function PostScreen() {
               .slice()
               .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0))[0];
             if (primary?.type) {
-              const now = Date.now();
-              const signature = `${primary.type}:${Number(primary.lbs || 0).toFixed(1)}`;
-              if (signature !== lastPromptSignature || now - lastPromptAtMs > 8000) {
-                setPendingDetection({
-                  type: primary.type,
-                  lbs: Number(primary.lbs || 0),
-                  source: response.data?.source || "gemini_live",
-                });
-                setLivePausedForReview(true);
-                setScanDecisionPromptVisible(false);
-                setLastPromptSignature(signature);
-                setLastPromptAtMs(now);
-                clearLiveFrameLoop();
-                setMessage(
-                  `Detected ${primary.type} (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
-                );
-              }
+              setPendingDetection({
+                type: primary.type,
+                lbs: Number(primary.lbs || 0),
+                source: response.data?.source || "gemini_live",
+              });
+              setLivePausedForReview(true);
+              livePausedForReviewRef.current = true;
+              setScanDecisionPromptVisible(false);
+              clearLiveFrameLoop();
+              setMessage(
+                `Detected ${primary.type} (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
+              );
             }
           }
         }
@@ -321,8 +315,6 @@ export function PostScreen() {
     },
     [
       clearLiveFrameLoop,
-      lastPromptAtMs,
-      lastPromptSignature,
       normalizeAiRows,
       pendingDetection,
       scanDecisionPromptVisible,
@@ -345,6 +337,7 @@ export function PostScreen() {
     const sessionId = liveSessionIdRef.current;
     if (!sessionId) return;
     setLivePausedForReview(false);
+    livePausedForReviewRef.current = false;
     setScanDecisionPromptVisible(false);
     setMessage("Live AI preview active.");
     await sendLiveFrame(sessionId);
@@ -418,6 +411,7 @@ export function PostScreen() {
       liveSessionIdRef.current = sessionId;
       setLiveRunning(true);
       setLivePausedForReview(false);
+      livePausedForReviewRef.current = false;
       setPendingDetection(null);
       setScanDecisionPromptVisible(false);
       setAiSource(start.data?.source_mode || "");
@@ -461,6 +455,7 @@ export function PostScreen() {
     setPendingDetection(null);
     setScanDecisionPromptVisible(false);
     setLivePausedForReview(false);
+    livePausedForReviewRef.current = false;
     setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
   };
 
