@@ -10,17 +10,5 @@ services:
     envVars:
       - key: FLASK_ENV
         value: production
-      - key: PORT
-        sync: false
-      - key: AMD_API_KEY
-        sync: false
-      - key: ELEVENLABS_API_KEY
-        sync: false
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_PHONE_NUMBER
-        sync: false
       - key: ENABLE_CLAUDE_FALLBACK
         value: "0"
