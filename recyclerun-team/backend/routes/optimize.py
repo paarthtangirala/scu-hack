@@ -202,14 +202,16 @@ def accept_route():
             )
 
         notifications_sent = len([n for n in notifications if n.get("notification", {}).get("success")])
+        notifications_failed = len([n for n in notifications if n.get("status_code") == "notification_failed"])
         logger.info(
-            "accept-route processed request_id=%s driver_name=%s requested_stops=%d claimed_count=%d skipped_count=%d notifications_sent=%d",
+            "accept-route processed request_id=%s driver_name=%s requested_stops=%d claimed_count=%d skipped_count=%d notifications_sent=%d notifications_failed=%d",
             request_id,
             driver_name,
             len(route_stops),
             claimed_count,
             skipped_count,
             notifications_sent,
+            notifications_failed,
         )
 
         response = {
@@ -221,6 +223,7 @@ def accept_route():
             "claimed_count": claimed_count,
             "skipped_count": skipped_count,
             "notifications_sent": notifications_sent,
+            "notifications_failed": notifications_failed,
             "notifications": notifications,
         }
         store.save_accept_route_result(request_id, response)

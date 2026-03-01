@@ -102,11 +102,26 @@ export function DriverScreen() {
       return;
     }
     setAccepted(true);
-    setMessage(
-      `Route accepted. Notifications sent: ${response.data?.notifications_sent || 0}, skipped: ${
-        response.data?.skipped_count || 0
-      }`
+    const notifications = response.data?.notifications || [];
+    const claimed = Number(response.data?.claimed_count || 0);
+    const sent = Number(
+      response.data?.notifications_sent ??
+      notifications.filter((item) => item?.notification?.success).length
     );
+    const skipped = Number(
+      response.data?.skipped_count ??
+      notifications.filter((item) => item?.notification?.mode === "skipped").length
+    );
+    const failed = Number(
+      response.data?.notifications_failed ??
+      notifications.filter((item) => item?.status_code === "notification_failed").length
+    );
+
+    let routeMessage = `Route accepted. Claimed: ${claimed}, sent: ${sent}, failed: ${failed}, skipped: ${skipped}`;
+    if (failed > 0 && sent === 0) {
+      routeMessage += ". Voice calls failed (likely Twilio verification or credentials).";
+    }
+    setMessage(routeMessage);
   };
 
   const completeStop = async (stop) => {

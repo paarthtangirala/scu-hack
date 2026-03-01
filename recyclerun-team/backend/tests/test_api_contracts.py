@@ -316,6 +316,7 @@ def test_accept_route_replay_with_same_request_id_is_side_effect_free(monkeypatc
     assert body2["idempotent_replay"] is True
     assert body1["claimed_count"] == body2["claimed_count"] == 1
     assert body1["notifications_sent"] == body2["notifications_sent"] == 1
+    assert body1["notifications_failed"] == body2["notifications_failed"] == 0
     assert body1["notifications"] == body2["notifications"]
     assert calls["count"] == 1
 
@@ -403,6 +404,7 @@ def test_accept_route_notifications_sent_counts_demo_and_live_not_failed(monkeyp
 
     assert body["claimed_count"] == 3
     assert body["notifications_sent"] == 2
+    assert body["notifications_failed"] == 1
 
     by_id = {entry["listing_id"]: entry for entry in body["notifications"]}
     assert by_id[first_id]["notification"]["mode"] == "live"
