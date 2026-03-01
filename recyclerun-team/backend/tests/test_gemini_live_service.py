@@ -198,6 +198,31 @@ def test_parse_normalizes_material_aliases():
     assert parsed["notes"] == "desk items"
 
 
+def test_parse_accepts_recyclable_materials_key_and_weight_alias():
+    service = GeminiLiveService()
+    parsed = service._parse_prediction(
+        '{"recyclable_materials":[{"material":"cardboard","weight_lbs":3.4,"score":0.7}],"summary":"box pile"}'
+    )
+
+    assert parsed is not None
+    assert len(parsed["materials"]) == 1
+    assert parsed["materials"][0]["type"] == "cardboard"
+    assert parsed["materials"][0]["lbs"] == 3.4
+    assert parsed["materials"][0]["confidence"] == 0.7
+    assert parsed["notes"] == "box pile"
+
+
+def test_parse_allows_empty_materials_list_without_forcing_demo_fallback():
+    service = GeminiLiveService()
+    parsed = service._parse_prediction('{"materials":[],"notes":"no recyclables visible"}')
+
+    assert parsed is not None
+    assert parsed["materials"] == []
+    assert parsed["total_lbs"] == 0
+    assert parsed["total_value"] == 0
+    assert parsed["notes"] == "no recyclables visible"
+
+
 def test_non_200_response_log_includes_upstream_error_snippet(monkeypatch, caplog):
     service = GeminiLiveService()
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")

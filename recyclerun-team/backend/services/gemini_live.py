@@ -464,18 +464,24 @@ class GeminiLiveService:
                 continue
             if not isinstance(obj, dict):
                 continue
-            raw_materials = obj.get("materials")
-            if not isinstance(raw_materials, list):
+            raw_materials = self._extract_material_rows(obj)
+            if raw_materials is None:
                 continue
 
             materials = []
             for item in raw_materials:
                 if not isinstance(item, dict):
                     continue
-                mat_type = self._normalize_material_type(item.get("type"))
+                mat_type = self._normalize_material_type(
+                    item.get("type") or item.get("material") or item.get("material_type")
+                )
                 if mat_type not in MATERIAL_RATES:
                     continue
                 lbs_raw = item.get("lbs")
+                if lbs_raw is None:
+                    lbs_raw = item.get("weight_lbs")
+                if lbs_raw is None:
+                    lbs_raw = item.get("weight")
                 try:
                     lbs = float(lbs_raw)
                 except (TypeError, ValueError):
@@ -483,7 +489,7 @@ class GeminiLiveService:
                 lbs = round(max(min_lbs, min(max_lbs, lbs)), 1)
                 material = Material(type=mat_type, lbs=lbs)
                 row = material.to_dict()
-                confidence = self._safe_float(item.get("confidence"), 0.8)
+                confidence = self._safe_float(item.get("confidence"), self._safe_float(item.get("score"), 0.8))
                 row["confidence"] = max(0.0, min(1.0, confidence))
                 raw_confidence = self._safe_float(item.get("raw_confidence"), None)
                 if raw_confidence is not None:
@@ -493,10 +499,7 @@ class GeminiLiveService:
                     row["provenance"] = provenance.strip()
                 materials.append(row)
 
-            if not materials:
-                continue
-
-            notes = obj.get("notes", "")
+            notes = obj.get("notes", obj.get("summary", ""))
             if not isinstance(notes, str):
                 notes = str(notes)
             return {
@@ -505,6 +508,14 @@ class GeminiLiveService:
                 "total_value": round(sum(m["value"] for m in materials), 2),
                 "notes": notes,
             }
+        return None
+
+    @staticmethod
+    def _extract_material_rows(obj: dict) -> list | None:
+        for key in ("materials", "recyclable_materials", "recyclables", "items"):
+            rows = obj.get(key)
+            if isinstance(rows, list):
+                return rows
         return None
 
     def _build_demo_prediction(self, *, session: GeminiLiveSession, latency_ms: int, reason: str) -> dict:
