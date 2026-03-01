@@ -677,7 +677,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       address: "",
       phone: useProfileContact ? profilePhone : prev.phone,
       notes: "",
-    });
+    }));
     setAiMaterials([]);
     setAiSource("");
     setManualRows([]);
