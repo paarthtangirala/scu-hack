@@ -193,10 +193,18 @@ def test_accept_route_respects_external_correlation_id():
     assert body["idempotent_replay"] is False
 
 
-def test_accept_route_replay_with_same_request_id_is_side_effect_free():
+def test_accept_route_replay_with_same_request_id_is_side_effect_free(monkeypatch):
     _reset()
     client = _client()
     target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    calls = {"count": 0}
+
+    def _fake_notify(**kwargs):
+        calls["count"] += 1
+        return {"success": True, "mode": "live", "call_sid": "CA_REPLAY_1"}
+
+    monkeypatch.setattr(optimize_module.notifier, "notify", _fake_notify)
+
     payload = {
         "request_id": "stable-request-77",
         "driver_name": "Replay Driver",
@@ -216,6 +224,102 @@ def test_accept_route_replay_with_same_request_id_is_side_effect_free():
     assert body2["idempotent_replay"] is True
     assert body1["claimed_count"] == body2["claimed_count"] == 1
     assert body1["notifications_sent"] == body2["notifications_sent"] == 1
+    assert body1["notifications"] == body2["notifications"]
+    assert calls["count"] == 1
+
+
+def test_accept_route_notification_envelope_mode_accuracy_and_retry_signal(monkeypatch):
+    _reset()
+    client = _client()
+    available = client.get("/api/listings?status=available").get_json()["listings"]
+    first_id = available[0]["id"]
+    second_id = available[1]["id"]
+
+    responses = [
+        {"success": True, "mode": "live", "call_sid": "CA_MODE_1"},
+        {"success": False, "mode": "failed", "error": "try again", "reason": "twilio_exception"},
+        {"success": True, "mode": "demo", "message": "retry demo", "reason": "forced_demo_mode"},
+    ]
+
+    def _fake_notify(**kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(optimize_module.notifier, "notify", _fake_notify)
+
+    resp = client.post(
+        "/api/accept-route",
+        json={
+            "driver_name": "Mode Driver",
+            "stops": [
+                {"listing_id": first_id, "eta_minutes": 10},
+                {"listing_id": second_id, "eta_minutes": 14},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    first = body["notifications"][0]
+    second = body["notifications"][1]
+
+    for entry in body["notifications"]:
+        assert all(k in entry for k in ("listing_id", "status_code", "retryable", "attempts", "notification", "success"))
+
+    assert first["notification"]["mode"] == "live"
+    assert first["attempts"] == 1
+    assert "retry_attempt" not in first["notification"]
+    assert first["status_code"] == "claimed_notified"
+
+    assert second["notification"]["mode"] == "demo"
+    assert second["attempts"] == 2
+    assert second["notification"]["retry_attempt"] == 2
+    assert second["status_code"] == "claimed_notified"
+    assert second["notification"]["reason"] == "forced_demo_mode"
+
+
+def test_accept_route_notifications_sent_counts_demo_and_live_not_failed(monkeypatch):
+    _reset()
+    client = _client()
+    available = client.get("/api/listings?status=available").get_json()["listings"]
+    first_id = available[0]["id"]
+    second_id = available[1]["id"]
+    third_id = available[2]["id"]
+    call_count = {"value": 0}
+
+    def _fake_notify(**kwargs):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            return {"success": True, "mode": "live", "call_sid": "CA_COUNT_1"}
+        if call_count["value"] == 2:
+            return {"success": True, "mode": "demo", "message": "demo success", "reason": "twilio_not_configured"}
+        return {"success": False, "mode": "failed", "error": "twilio down", "reason": "twilio_exception"}
+
+    monkeypatch.setattr(optimize_module.notifier, "notify", _fake_notify)
+
+    resp = client.post(
+        "/api/accept-route",
+        json={
+            "driver_name": "Count Driver",
+            "stops": [
+                {"listing_id": first_id, "eta_minutes": 10},
+                {"listing_id": second_id, "eta_minutes": 11},
+                {"listing_id": third_id, "eta_minutes": 12},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.get_json()
+
+    assert body["claimed_count"] == 3
+    assert body["notifications_sent"] == 2
+
+    by_id = {entry["listing_id"]: entry for entry in body["notifications"]}
+    assert by_id[first_id]["notification"]["mode"] == "live"
+    assert by_id[second_id]["notification"]["mode"] == "demo"
+    assert by_id[third_id]["notification"]["mode"] == "failed"
+    assert by_id[third_id]["status_code"] == "notification_failed"
+    assert by_id[third_id]["retryable"] is True
+    assert by_id[third_id]["attempts"] == 2
+    assert "retry_attempt" not in by_id[third_id]["notification"]
 
 
 def test_accept_route_prevents_double_claim_under_concurrency():
@@ -269,7 +373,12 @@ def test_accept_route_notification_item_contract_and_eta_gap(monkeypatch):
     monkeypatch.setattr(
         optimize_module.notifier,
         "notify",
-        lambda **kwargs: {"success": True, "mode": "demo", "message": "offline contract test"},
+        lambda **kwargs: {
+            "success": True,
+            "mode": "demo",
+            "message": "offline contract test",
+            "reason": "twilio_not_configured",
+        },
     )
 
     first_resp = client.post(

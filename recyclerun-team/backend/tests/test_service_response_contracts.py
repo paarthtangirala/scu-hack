@@ -138,11 +138,10 @@ def test_optimizer_summary_required_keys_types_and_objective_normalization(monke
 
 def test_voice_notify_live_variant_shape(monkeypatch):
     notifier = VoiceNotifier()
-    monkeypatch.setattr(VoiceNotifier, "_generate_audio", lambda self, text: b"audio")
     monkeypatch.setattr(
         VoiceNotifier,
         "_make_call",
-        lambda self, phone, message, audio: {"success": True, "mode": "live", "call_sid": "CA123"},
+        lambda self, phone, message, timeout_seconds=None: {"success": True, "mode": "live", "call_sid": "CA123"},
     )
 
     result = notifier.notify("+14085550101", "Household", 20, "Driver")
@@ -151,23 +150,30 @@ def test_voice_notify_live_variant_shape(monkeypatch):
 
 def test_voice_notify_demo_variant_with_message(monkeypatch):
     notifier = VoiceNotifier()
-    monkeypatch.setattr(VoiceNotifier, "_generate_audio", lambda self, text: None)
+    monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.delenv("TWILIO_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("TWILIO_PHONE_NUMBER", raising=False)
+    monkeypatch.delenv("VOICE_FORCE_DEMO", raising=False)
 
     result = notifier.notify("+14085550101", "Household", 20, "Driver")
     assert result["success"] is True
     assert result["mode"] == "demo"
     assert isinstance(result["message"], str)
     assert len(result["message"]) > 0
+    assert result["reason"] == "twilio_not_configured"
 
 
-def test_voice_make_call_demo_variant_without_message_when_twilio_env_missing(monkeypatch):
+def test_voice_make_call_demo_variant_with_message_and_reason_when_twilio_env_missing(monkeypatch):
     notifier = VoiceNotifier()
     monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
     monkeypatch.delenv("TWILIO_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("TWILIO_PHONE_NUMBER", raising=False)
 
-    result = notifier._make_call("+14085550101", "message", b"audio")
-    assert result == {"success": True, "mode": "demo"}
+    result = notifier._make_call("+14085550101", "message")
+    assert result["success"] is True
+    assert result["mode"] == "demo"
+    assert result["reason"] == "twilio_not_configured"
+    assert result["message"] == "message"
 
 
 def test_voice_make_call_failed_variant_shape(monkeypatch):
@@ -182,28 +188,36 @@ def test_voice_make_call_failed_variant_shape(monkeypatch):
             raise RuntimeError("simulated twilio failure")
 
     class _FakeClient:
-        def __init__(self, sid, token):
+        def __init__(self, sid, token, http_client=None):
             self.calls = _FakeCalls()
 
     fake_twilio = types.ModuleType("twilio")
     fake_twilio_rest = types.ModuleType("twilio.rest")
+    fake_twilio_http = types.ModuleType("twilio.http")
+    fake_twilio_http_client = types.ModuleType("twilio.http.http_client")
     fake_twilio_rest.Client = _FakeClient
+    fake_twilio_http_client.TwilioHttpClient = lambda timeout=None: object()
+    fake_twilio_http.http_client = fake_twilio_http_client
     fake_twilio.rest = fake_twilio_rest
+    fake_twilio.http = fake_twilio_http
 
     monkeypatch.setitem(sys.modules, "twilio", fake_twilio)
     monkeypatch.setitem(sys.modules, "twilio.rest", fake_twilio_rest)
+    monkeypatch.setitem(sys.modules, "twilio.http", fake_twilio_http)
+    monkeypatch.setitem(sys.modules, "twilio.http.http_client", fake_twilio_http_client)
 
-    result = notifier._make_call("+14085550101", "message", b"audio")
+    result = notifier._make_call("+14085550101", "message")
     assert result["success"] is False
     assert result["mode"] == "failed"
     assert isinstance(result["error"], str)
     assert "simulated twilio failure" in result["error"]
+    assert result["reason"] == "twilio_exception"
 
 
 def test_notify_with_retry_adds_retry_attempt_only_on_retry_success(monkeypatch):
     results = [
-        {"success": False, "mode": "failed", "error": "first failure"},
-        {"success": True, "mode": "demo", "message": "second attempt success"},
+        {"success": False, "mode": "failed", "error": "first failure", "reason": "twilio_exception"},
+        {"success": True, "mode": "demo", "message": "second attempt success", "reason": "forced_demo_mode"},
     ]
 
     def _fake_notify(**kwargs):
