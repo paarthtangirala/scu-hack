@@ -143,6 +143,21 @@ def test_parse_clamps_lbs_with_env_bounds(monkeypatch):
     assert parsed["total_lbs"] == 10.4
 
 
+def test_parse_counted_items_enforce_total_weight_floor():
+    service = GeminiLiveService()
+    parsed = service._parse_prediction(
+        '{"materials":[{"type":"aluminum_cans","count":4,"lbs":0.1},{"type":"plastic_pet","count":2,"lbs":0.1}]}'
+    )
+
+    assert parsed is not None
+    by_type = {row["type"]: row for row in parsed["materials"]}
+    assert by_type["aluminum_cans"]["count"] == 4
+    assert by_type["aluminum_cans"]["lbs"] == 0.4
+    assert by_type["plastic_pet"]["count"] == 2
+    assert by_type["plastic_pet"]["lbs"] == 0.2
+    assert parsed["total_lbs"] == 0.6
+
+
 def test_session_stop_is_idempotent(monkeypatch):
     service = GeminiLiveService()
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")

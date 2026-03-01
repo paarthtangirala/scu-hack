@@ -516,9 +516,8 @@ class GeminiLiveService:
                 except (TypeError, ValueError):
                     continue
                 if count > 1:
-                    min_unit = MIN_UNIT_LBS_BY_TYPE.get(mat_type)
-                    if min_unit is not None:
-                        lbs = max(lbs, round(min_unit * count, 3))
+                    per_item_floor = max(min_lbs, MIN_UNIT_LBS_BY_TYPE.get(mat_type, 0.0))
+                    lbs = max(lbs, round(per_item_floor * count, 3))
                 lbs = round(max(min_lbs, min(max_lbs, lbs)), 1)
                 material = Material(type=mat_type, lbs=lbs)
                 row = material.to_dict()

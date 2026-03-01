@@ -28,6 +28,23 @@ function formatApiFailure(action, response) {
   return `${action} failed: ${response?.error || "Request failed"}${hint}`;
 }
 
+const LIVE_MIN_PER_ITEM_LBS = 0.1;
+
+function normalizeLiveDetectionCount(rawCount) {
+  const count = Number(rawCount);
+  if (!Number.isFinite(count) || count <= 0) return 1;
+  return Math.max(1, Math.round(count));
+}
+
+function normalizeLiveDetectionLbs(rawLbs, rawCount) {
+  const lbs = Number(rawLbs);
+  if (!Number.isFinite(lbs) || lbs <= 0) return 0;
+  const count = normalizeLiveDetectionCount(rawCount);
+  const minTotal = LIVE_MIN_PER_ITEM_LBS * count;
+  const total = count > 1 ? Math.max(lbs, minTotal) : Math.max(lbs, LIVE_MIN_PER_ITEM_LBS);
+  return Math.round(total * 10) / 10;
+}
+
 export function PostScreen() {
   const [materials, setMaterials] = useState(FALLBACK_MATERIALS);
   const [form, setForm] = useState({
@@ -169,10 +186,9 @@ export function PostScreen() {
       const order = [];
       (Array.isArray(rows) ? rows : []).forEach((row) => {
         const type = typeof row?.type === "string" ? row.type.trim() : "";
-        const lbs = Number(row?.lbs);
-        const count = Number(row?.count);
-        const safeCount = Number.isFinite(count) && count > 0 ? Math.round(count) : 1;
-        if (!type || !Number.isFinite(lbs) || lbs <= 0 || locked.has(type)) return;
+        const safeCount = normalizeLiveDetectionCount(row?.count);
+        const lbs = normalizeLiveDetectionLbs(row?.lbs, safeCount);
+        if (!type || lbs <= 0 || locked.has(type)) return;
         if (!merged.has(type)) {
           merged.set(type, { lbs, count: safeCount });
           order.push(type);
@@ -197,7 +213,7 @@ export function PostScreen() {
       return;
     }
     upsertManualLock(manualType);
-    setManualRows((prev) => [...prev, { id: String(Date.now()), type: manualType, lbs }]);
+    setManualRows((prev) => [...prev, { id: String(Date.now()), type: manualType, lbs, count: 1 }]);
     setManualLbs("");
     setMessage("");
   };
@@ -440,17 +456,23 @@ export function PostScreen() {
       finishDetectionDecision(false);
       return;
     }
-    const lbs = Math.round(Number(pendingDetection.lbs) * 10) / 10;
+    const count = normalizeLiveDetectionCount(pendingDetection.count);
+    const lbs = normalizeLiveDetectionLbs(pendingDetection.lbs, count);
+    if (lbs <= 0) {
+      finishDetectionDecision(false);
+      return;
+    }
     setManualRows((prev) => {
       const existingIdx = prev.findIndex((row) => row.type === pendingDetection.type);
       if (existingIdx === -1) {
-        return [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs }];
+        return [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs, count }];
       }
       const next = [...prev];
       const existing = next[existingIdx];
       next[existingIdx] = {
         ...existing,
         lbs: Math.round((Number(existing.lbs || 0) + lbs) * 10) / 10,
+        count: normalizeLiveDetectionCount(existing.count) + count,
       };
       return next;
     });
@@ -828,7 +850,10 @@ export function PostScreen() {
         {manualRows.map((row) => (
           <View key={row.id} style={styles.manualRow}>
             <Text style={styles.manualText}>
-              {materials[row.type]?.emoji || "♻️"} {row.type} - {row.lbs.toFixed(1)} lbs
+              {materials[row.type]?.emoji || "♻️"} {row.type}
+              {normalizeLiveDetectionCount(row.count) > 1 ? ` x${normalizeLiveDetectionCount(row.count)}` : ""}
+              {" - "}
+              {row.lbs.toFixed(1)} lbs
             </Text>
             <TextInput
               value={String(row.lbs)}
