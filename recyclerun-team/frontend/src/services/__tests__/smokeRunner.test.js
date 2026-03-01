@@ -36,6 +36,14 @@ function mockAllValid() {
   });
 }
 
+function runSmoke(overrides = {}) {
+  return runSmokeTests({
+    baseUrl: 'http://localhost:5000/api',
+    logTable: false,
+    ...overrides,
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -45,7 +53,7 @@ describe('runSmokeTests', () => {
   it('all 5 endpoints return valid responses → all PASS, demoSafe: true', async () => {
     mockAllValid();
 
-    const { results, summary } = await runSmokeTests({ baseUrl: 'http://localhost:5000/api' });
+    const { results, summary } = await runSmoke();
 
     expect(results).toHaveLength(5);
     expect(results.every(r => r.status === 'PASS')).toBe(true);
@@ -68,7 +76,7 @@ describe('runSmokeTests', () => {
       return makeResponse(404, {});
     });
 
-    const { results, summary } = await runSmokeTests({ baseUrl: 'http://localhost:5000/api' });
+    const { results, summary } = await runSmoke();
 
     const health = results.find(r => r.endpoint === '/api/health');
     expect(health).toBeDefined();
@@ -90,7 +98,7 @@ describe('runSmokeTests', () => {
       return makeResponse(404, {});
     });
 
-    const { results } = await runSmokeTests({ baseUrl: 'http://localhost:5000/api' });
+    const { results } = await runSmoke();
 
     const listings = results.find(r => r.endpoint === '/api/listings');
     expect(listings).toBeDefined();
@@ -110,7 +118,7 @@ describe('runSmokeTests', () => {
       return makeResponse(404, {});
     });
 
-    const { results } = await runSmokeTests({ baseUrl: 'http://localhost:5000/api' });
+    const { results } = await runSmoke();
 
     const classify = results.find(r => r.endpoint === '/api/classify');
     expect(classify).toBeDefined();
@@ -122,7 +130,7 @@ describe('runSmokeTests', () => {
   it('all fetches throw TypeError network error → fallbackActivated: true, all results PASS or SKIP', async () => {
     vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'));
 
-    const { results, summary } = await runSmokeTests({ baseUrl: 'http://localhost:5000/api' });
+    const { results, summary } = await runSmoke();
 
     expect(summary.fallbackActivated).toBe(true);
     expect(results).toHaveLength(5);
@@ -150,10 +158,7 @@ describe('runSmokeTests', () => {
       return makeResponse(404, {});
     });
 
-    const { results } = await runSmokeTests({
-      baseUrl: 'http://localhost:5000/api',
-      timeoutMs: 10000,
-    });
+    const { results } = await runSmoke({ timeoutMs: 10000 });
 
     const health = results.find(r => r.endpoint === '/api/health');
     expect(health).toBeDefined();
@@ -179,7 +184,7 @@ describe('runSmokeTests', () => {
       return makeResponse(404, {});
     });
 
-    const { results, summary } = await runSmokeTests({ baseUrl: 'http://localhost:5000/api' });
+    const { results, summary } = await runSmoke();
 
     expect(summary.passed).toBe(3);
     expect(summary.failed).toBe(2);

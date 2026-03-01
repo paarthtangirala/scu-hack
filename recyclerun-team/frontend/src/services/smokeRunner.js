@@ -20,6 +20,7 @@ const LATENCY_WARN_MS = 2000;
  * @param {string}  [options.baseUrl]      - Override API base URL (default mirrors api.js)
  * @param {number}  [options.timeoutMs]    - Per-request timeout in ms (default 5000)
  * @param {boolean} [options.fallbackMode] - Force fallback mode from the start
+ * @param {boolean} [options.logTable]     - Print result table to console (default true)
  * @returns {Promise<{results: object[], summary: object}>}
  */
 export async function runSmokeTests(options = {}) {
@@ -27,6 +28,7 @@ export async function runSmokeTests(options = {}) {
     baseUrl = DEFAULT_BASE,
     timeoutMs = 5000,
     fallbackMode: initialFallback = false,
+    logTable = true,
   } = options;
 
   let fallbackMode = initialFallback;
@@ -374,16 +376,18 @@ export async function runSmokeTests(options = {}) {
     demoSafe: p0Failures.length === 0,
   };
 
-  console.table(
-    results.map(r => ({
-      endpoint: r.endpoint,
-      method: r.method,
-      status: r.status,
-      ms: r.responseTime_ms,
-      blocker: r.blocker ?? '',
-      error: r.error ?? '',
-    })),
-  );
+  if (logTable) {
+    console.table(
+      results.map(r => ({
+        endpoint: r.endpoint,
+        method: r.method,
+        status: r.status,
+        ms: r.responseTime_ms,
+        blocker: r.blocker ?? '',
+        error: r.error ?? '',
+      })),
+    );
+  }
 
   return { results, summary };
 }
