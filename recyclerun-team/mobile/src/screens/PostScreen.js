@@ -63,8 +63,24 @@ export function PostScreen() {
   const frameLoopRef = useRef(null);
   const frameBusyRef = useRef(false);
   const livePausedForReviewRef = useRef(false);
+  const pendingDetectionRef = useRef(null);
+  const scanDecisionPromptVisibleRef = useRef(false);
 
   const materialKeys = useMemo(() => Object.keys(materials), [materials]);
+  const liveFlowStage = useMemo(() => {
+    if (startingLive) return "starting";
+    if (!liveRunning) return "idle";
+    if (pendingDetection) return "review";
+    if (scanDecisionPromptVisible) return "decision";
+    return "scanning";
+  }, [liveRunning, pendingDetection, scanDecisionPromptVisible, startingLive]);
+  const liveFlowMessage = useMemo(() => {
+    if (liveFlowStage === "starting") return "Starting session and capturing first frame.";
+    if (liveFlowStage === "review") return "Review detection, then add or skip.";
+    if (liveFlowStage === "decision") return "Choose to keep scanning or end the live session.";
+    if (liveFlowStage === "scanning") return "Scanning camera feed and waiting for next detection.";
+    return "Tap Start Live Preview to begin guided scan mode.";
+  }, [liveFlowStage]);
 
   useEffect(() => {
     lockedTypesRef.current = lockedTypes;
@@ -73,6 +89,14 @@ export function PostScreen() {
   useEffect(() => {
     livePausedForReviewRef.current = livePausedForReview;
   }, [livePausedForReview]);
+
+  useEffect(() => {
+    pendingDetectionRef.current = pendingDetection;
+  }, [pendingDetection]);
+
+  useEffect(() => {
+    scanDecisionPromptVisibleRef.current = scanDecisionPromptVisible;
+  }, [scanDecisionPromptVisible]);
 
   useEffect(() => {
     if (!cameraPermission?.granted) {
@@ -234,7 +258,9 @@ export function PostScreen() {
     setLivePausedForReview(false);
     livePausedForReviewRef.current = false;
     setPendingDetection(null);
+    pendingDetectionRef.current = null;
     setScanDecisionPromptVisible(false);
+    scanDecisionPromptVisibleRef.current = false;
     frameBusyRef.current = false;
     const sessionId = liveSessionIdRef.current;
     liveSessionIdRef.current = "";
@@ -281,7 +307,11 @@ export function PostScreen() {
           setMessage(`Live AI fallback mode active${detail}. You can still add/edit materials manually.`);
         } else {
           setMessage("Live AI preview active.");
-          if (normalizedRows.length > 0 && !pendingDetection && !scanDecisionPromptVisible) {
+          if (
+            normalizedRows.length > 0 &&
+            !pendingDetectionRef.current &&
+            !scanDecisionPromptVisibleRef.current
+          ) {
             const primary = normalizedRows
               .slice()
               .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0))[0];
@@ -291,9 +321,15 @@ export function PostScreen() {
                 lbs: Number(primary.lbs || 0),
                 source: response.data?.source || "gemini_live",
               });
+              pendingDetectionRef.current = {
+                type: primary.type,
+                lbs: Number(primary.lbs || 0),
+                source: response.data?.source || "gemini_live",
+              };
               setLivePausedForReview(true);
               livePausedForReviewRef.current = true;
               setScanDecisionPromptVisible(false);
+              scanDecisionPromptVisibleRef.current = false;
               clearLiveFrameLoop();
               setMessage(
                 `Detected ${primary.type} (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
@@ -316,8 +352,6 @@ export function PostScreen() {
     [
       clearLiveFrameLoop,
       normalizeAiRows,
-      pendingDetection,
-      scanDecisionPromptVisible,
       stopLivePreview,
     ],
   );
@@ -339,6 +373,7 @@ export function PostScreen() {
     setLivePausedForReview(false);
     livePausedForReviewRef.current = false;
     setScanDecisionPromptVisible(false);
+    scanDecisionPromptVisibleRef.current = false;
     setMessage("Live AI preview active.");
     await sendLiveFrame(sessionId);
     runLiveLoop(sessionId);
@@ -351,7 +386,9 @@ export function PostScreen() {
       setMessage("Item skipped. Keep scanning or end live preview.");
     }
     setPendingDetection(null);
+    pendingDetectionRef.current = null;
     setScanDecisionPromptVisible(true);
+    scanDecisionPromptVisibleRef.current = true;
   }, []);
 
   const confirmAddDetected = useCallback(() => {
@@ -360,10 +397,21 @@ export function PostScreen() {
       return;
     }
     const lbs = Math.round(Number(pendingDetection.lbs) * 10) / 10;
-    upsertManualLock(pendingDetection.type);
-    setManualRows((prev) => [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs }]);
+    setManualRows((prev) => {
+      const existingIdx = prev.findIndex((row) => row.type === pendingDetection.type);
+      if (existingIdx === -1) {
+        return [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs }];
+      }
+      const next = [...prev];
+      const existing = next[existingIdx];
+      next[existingIdx] = {
+        ...existing,
+        lbs: Math.round((Number(existing.lbs || 0) + lbs) * 10) / 10,
+      };
+      return next;
+    });
     finishDetectionDecision(true);
-  }, [finishDetectionDecision, pendingDetection, upsertManualLock]);
+  }, [finishDetectionDecision, pendingDetection]);
 
   const skipDetected = useCallback(() => {
     finishDetectionDecision(false);
@@ -413,7 +461,9 @@ export function PostScreen() {
       setLivePausedForReview(false);
       livePausedForReviewRef.current = false;
       setPendingDetection(null);
+      pendingDetectionRef.current = null;
       setScanDecisionPromptVisible(false);
+      scanDecisionPromptVisibleRef.current = false;
       setAiSource(start.data?.source_mode || "");
       await sendLiveFrame(sessionId);
       runLiveLoop(sessionId);
@@ -453,7 +503,9 @@ export function PostScreen() {
     setAiMaterials([]);
     setAiSource("");
     setPendingDetection(null);
+    pendingDetectionRef.current = null;
     setScanDecisionPromptVisible(false);
+    scanDecisionPromptVisibleRef.current = false;
     setLivePausedForReview(false);
     livePausedForReviewRef.current = false;
     setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
@@ -625,6 +677,24 @@ export function PostScreen() {
             <Text style={styles.liveHint}>
               Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
             </Text>
+            <View style={styles.flowCard}>
+              <Text style={styles.flowTitle}>Live Flow</Text>
+              <View style={styles.flowRow}>
+                <View style={[styles.flowPill, liveFlowStage !== "idle" ? styles.flowPillActive : null]}>
+                  <Text style={styles.flowPillText}>Start</Text>
+                </View>
+                <View style={[styles.flowPill, liveFlowStage === "scanning" ? styles.flowPillActive : null]}>
+                  <Text style={styles.flowPillText}>Detect</Text>
+                </View>
+                <View style={[styles.flowPill, liveFlowStage === "review" ? styles.flowPillActive : null]}>
+                  <Text style={styles.flowPillText}>Confirm</Text>
+                </View>
+                <View style={[styles.flowPill, liveFlowStage === "decision" ? styles.flowPillActive : null]}>
+                  <Text style={styles.flowPillText}>Continue</Text>
+                </View>
+              </View>
+              <Text style={styles.flowCaption}>{liveFlowMessage}</Text>
+            </View>
             {pendingDetection ? (
               <View style={styles.confirmBox}>
                 <Text style={styles.confirmTitle}>Detected Item</Text>
@@ -824,6 +894,47 @@ const styles = StyleSheet.create({
   },
   liveHint: {
     marginTop: 8,
+    color: colors.muted,
+    fontSize: 11,
+  },
+  flowCard: {
+    marginTop: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    backgroundColor: "#fff",
+  },
+  flowTitle: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  flowRow: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: 6,
+  },
+  flowPill: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingVertical: 5,
+    alignItems: "center",
+    backgroundColor: "#FCFBF6",
+  },
+  flowPillActive: {
+    borderColor: colors.primary,
+    backgroundColor: "#EAF8F3",
+  },
+  flowPillText: {
+    color: colors.ink,
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  flowCaption: {
     color: colors.muted,
     fontSize: 11,
   },
