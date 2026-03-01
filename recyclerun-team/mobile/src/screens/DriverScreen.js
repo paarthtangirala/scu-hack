@@ -150,7 +150,7 @@ function buildExternalNavigationUrl(stops) {
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
-export function DriverScreen() {
+export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsumed = () => {} }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
@@ -259,6 +259,7 @@ export function DriverScreen() {
       maxMinutes,
       truckCapacity: capacity,
       objective,
+      priorityListingIds,
     });
     setLoading(false);
     if (!response.ok) {
@@ -271,6 +272,21 @@ export function DriverScreen() {
     setCompletedIds({});
     setCollectedLbs(0);
     setEarnedValue(0);
+
+    if (priorityListingIds.length) {
+      const included = new Set(
+        (response.data?.stops || []).map((stop) => stop?.listing_id || stop?.id).filter(Boolean),
+      );
+      const consumed = priorityListingIds.filter((id) => included.has(id));
+      if (consumed.length) {
+        onPriorityListingsConsumed(consumed);
+        setMessage(`Route built. Included ${consumed.length} newly posted listing(s).`);
+      } else {
+        setMessage(
+          "Route built, but newly posted listing was not feasible under current time/capacity. Increase limits and retry.",
+        );
+      }
+    }
   };
 
   const acceptRoute = async () => {

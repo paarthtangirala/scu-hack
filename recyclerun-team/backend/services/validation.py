@@ -147,6 +147,8 @@ def validate_optimize_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Di
     max_minutes = _parse_float(data.get("max_minutes", 120), "max_minutes", errors)
     truck_capacity_lbs = _parse_float(data.get("truck_capacity_lbs", 1000), "truck_capacity_lbs", errors)
     objective = _as_string(data.get("objective", "value")).lower()
+    raw_priority_listing_ids = data.get("priority_listing_ids", [])
+    priority_listing_ids: List[str] = []
 
     if lat is not None and not (-90 <= lat <= 90):
         errors.append({"field": "lat", "message": "Must be within [-90, 90]"})
@@ -164,6 +166,29 @@ def validate_optimize_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Di
             }
         )
 
+    if raw_priority_listing_ids is None:
+        raw_priority_listing_ids = []
+    if not isinstance(raw_priority_listing_ids, list):
+        errors.append({"field": "priority_listing_ids", "message": "Must be an array of listing ids"})
+    else:
+        if len(raw_priority_listing_ids) > 50:
+            errors.append({"field": "priority_listing_ids", "message": "Must contain at most 50 ids"})
+        seen = set()
+        for idx, raw_id in enumerate(raw_priority_listing_ids):
+            listing_id = _as_string(raw_id)
+            if not listing_id:
+                errors.append({"field": f"priority_listing_ids[{idx}]", "message": "Listing id is required"})
+                continue
+            safe_id = "".join(ch for ch in listing_id if ch.isalnum() or ch in {"_", "-"})
+            if not safe_id:
+                errors.append({"field": f"priority_listing_ids[{idx}]", "message": "Listing id has invalid characters"})
+                continue
+            normalized = safe_id[:80]
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            priority_listing_ids.append(normalized)
+
     if errors:
         return None, errors
 
@@ -173,6 +198,7 @@ def validate_optimize_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Di
         "max_minutes": float(max_minutes),
         "truck_capacity_lbs": float(truck_capacity_lbs),
         "objective": objective,
+        "priority_listing_ids": priority_listing_ids,
     }
     return normalized, []
 

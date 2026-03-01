@@ -150,6 +150,26 @@ def test_optimize_rejects_invalid_objective():
     assert any(e["field"] == "objective" for e in body["details"])
 
 
+def test_optimize_rejects_invalid_priority_listing_ids_shape():
+    _reset()
+    client = _client()
+    resp = client.post(
+        "/api/optimize-route",
+        json={
+            "lat": 37.35,
+            "lng": -121.95,
+            "max_minutes": 60,
+            "truck_capacity_lbs": 500,
+            "objective": "value",
+            "priority_listing_ids": "listing_abc",
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["code"] == "validation_error"
+    assert any(e["field"] == "priority_listing_ids" for e in body["details"])
+
+
 @pytest.mark.parametrize(
     ("kwargs", "expected_field"),
     [

@@ -188,7 +188,7 @@ export const api = {
     }),
   getLiveVisionSessionHealth: (sessionId) =>
     request(`/live-vision/session/${sessionId}/health`),
-  optimizeRoute: ({ lat, lng, maxMinutes, truckCapacity, objective }) =>
+  optimizeRoute: ({ lat, lng, maxMinutes, truckCapacity, objective, priorityListingIds = [] }) =>
     request("/optimize-route", {
       method: "POST",
       body: JSON.stringify({
@@ -197,6 +197,7 @@ export const api = {
         max_minutes: maxMinutes,
         truck_capacity_lbs: truckCapacity,
         objective,
+        priority_listing_ids: priorityListingIds,
       }),
     }),
   acceptRoute: ({ stops, driverName, requestId }) =>

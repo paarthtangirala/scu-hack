@@ -60,13 +60,17 @@ function buildDetectionSignature(rows) {
   return normalized.join("|");
 }
 
-export function PostScreen() {
+export function PostScreen({ profile = null, onListingPosted = () => {} }) {
+  const profileName = String(profile?.display_name || "").trim();
+  const profilePhone = String(profile?.phone || "").trim();
+  const profileHasContact = Boolean(profileName);
+  const [useProfileContact, setUseProfileContact] = useState(profileHasContact);
   const [materials, setMaterials] = useState(FALLBACK_MATERIALS);
   const [form, setForm] = useState({
     listing_kind: "household",
-    household_name: "",
+    household_name: profileName,
     address: "",
-    phone: "",
+    phone: profilePhone,
     notes: "",
   });
   const [message, setMessage] = useState("");
@@ -160,6 +164,19 @@ export function PostScreen() {
   useEffect(() => {
     loadMaterials();
   }, [loadMaterials]);
+
+  useEffect(() => {
+    setUseProfileContact(Boolean(profileName));
+  }, [profileName]);
+
+  useEffect(() => {
+    if (!useProfileContact) return;
+    setForm((prev) => ({
+      ...prev,
+      household_name: profileName,
+      phone: profilePhone,
+    }));
+  }, [useProfileContact, profileName, profilePhone]);
 
   useEffect(() => {
     let mounted = true;
@@ -616,7 +633,9 @@ export function PostScreen() {
   };
 
   const submitListing = async () => {
-    if (!form.household_name.trim() || !form.address.trim()) {
+    const effectiveName = (useProfileContact ? profileName : form.household_name).trim();
+    const effectivePhone = (useProfileContact ? profilePhone : form.phone).trim();
+    if (!effectiveName || !form.address.trim()) {
       setMessage("Name and address are required");
       return;
     }
@@ -638,6 +657,9 @@ export function PostScreen() {
     const { lat, lng } = randomLatLng();
     const response = await api.createListing({
       ...form,
+      household_name: effectiveName,
+      phone: effectivePhone,
+      profile_id: profile?.id || "",
       lat,
       lng,
       materials: merged,
@@ -650,13 +672,14 @@ export function PostScreen() {
     }
 
     setMessage("Listing posted successfully");
-    setForm({
-      listing_kind: "household",
-      household_name: "",
+    onListingPosted(response?.data?.listing?.id || "");
+    setForm((prev) => ({
+      listing_kind: prev.listing_kind,
+      household_name: useProfileContact ? profileName : prev.household_name,
       address: "",
-      phone: "",
+      phone: useProfileContact ? profilePhone : prev.phone,
       notes: "",
-    });
+    }));
     setImageUri("");
     setAiMaterials([]);
     setAiSource("");
@@ -686,11 +709,40 @@ export function PostScreen() {
           ))}
         </View>
 
+        <Text style={styles.labelSecondary}>Contact Source</Text>
+        <View style={styles.toggleRow}>
+          <Pressable
+            style={[styles.toggle, useProfileContact ? styles.toggleActive : null, !profileHasContact ? styles.toggleDisabled : null]}
+            onPress={() => {
+              if (!profileHasContact) return;
+              setUseProfileContact(true);
+            }}
+          >
+            <Text style={useProfileContact ? styles.toggleTextActive : styles.toggleText}>
+              Use Profile
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.toggle, !useProfileContact ? styles.toggleActive : null]}
+            onPress={() => setUseProfileContact(false)}
+          >
+            <Text style={!useProfileContact ? styles.toggleTextActive : styles.toggleText}>
+              Custom
+            </Text>
+          </Pressable>
+        </View>
+        {useProfileContact ? (
+          <Text style={styles.contactHint}>
+            Posting as {profileName || "profile user"} {profilePhone ? `(${profilePhone})` : ""}.
+          </Text>
+        ) : null}
+
         <TextInput
           value={form.household_name}
           onChangeText={(text) => setForm((prev) => ({ ...prev, household_name: text }))}
           placeholder="Name"
           style={styles.input}
+          editable={!useProfileContact}
         />
         <TextInput
           value={form.address}
@@ -703,6 +755,7 @@ export function PostScreen() {
           onChangeText={(text) => setForm((prev) => ({ ...prev, phone: text }))}
           placeholder="Phone"
           style={styles.input}
+          editable={!useProfileContact}
         />
         <TextInput
           value={form.notes}
@@ -920,6 +973,13 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontWeight: "700",
   },
+  labelSecondary: {
+    color: colors.muted,
+    marginBottom: 6,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
   toggleRow: {
     flexDirection: "row",
     gap: 8,
@@ -938,8 +998,16 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     borderColor: colors.primary,
   },
+  toggleDisabled: {
+    opacity: 0.5,
+  },
   toggleText: { color: colors.ink, fontWeight: "600" },
   toggleTextActive: { color: "#fff", fontWeight: "700" },
+  contactHint: {
+    color: colors.muted,
+    marginBottom: 8,
+    fontSize: 12,
+  },
   input: {
     borderWidth: 1,
     borderColor: colors.border,

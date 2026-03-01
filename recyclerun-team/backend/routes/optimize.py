@@ -92,6 +92,7 @@ def optimize_route():
             max_minutes=data["max_minutes"],
             truck_capacity_lbs=data["truck_capacity_lbs"],
             objective=data["objective"],
+            priority_listing_ids=data.get("priority_listing_ids", []),
         )
     except Exception as exc:  # defensive guard: keep frontend-facing failure envelope structured
         logger.exception(

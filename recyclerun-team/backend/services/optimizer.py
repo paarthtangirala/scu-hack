@@ -27,6 +27,8 @@ VALUE_PENALTY_MULTIPLIER = 60
 LBS_PENALTY_MULTIPLIER = 180  # converts lbs "prize" into distance-like objective scale
 MILES_TO_METERS = 1609.34
 GREEDY_TIE_EPSILON = 1e-12
+PRIORITY_PENALTY_BOOST = 1_000_000_000
+PRIORITY_SCORE_BOOST = 1_000_000.0
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +52,15 @@ class RouteOptimizer:
         truck_capacity_lbs: float = 1000.0,
         objective: str = "value",
         force_fallback: bool = False,
+        priority_listing_ids: Optional[List[str]] = None,
     ) -> tuple[list[RouteStop], dict]:
         objective = _normalize_objective(objective)
         force_fallback = force_fallback or _env_truthy("OPTIMIZER_FORCE_FALLBACK")
+        priority_ids = {
+            str(listing_id).strip()
+            for listing_id in (priority_listing_ids or [])
+            if str(listing_id).strip()
+        }
         available = [l for l in listings if l.status == "available"]
         if not available:
             return [], self._build_summary([], truck_capacity_lbs, solver="none", solve_time_ms=0, objective=objective)
@@ -67,6 +75,7 @@ class RouteOptimizer:
                     max_minutes=max_minutes,
                     truck_capacity_lbs=truck_capacity_lbs,
                     objective=objective,
+                    priority_ids=priority_ids,
                 )
                 solve_time_ms = int((time.perf_counter() - start) * 1000)
                 return route, self._build_summary(route, truck_capacity_lbs, solver="ortools", solve_time_ms=solve_time_ms, objective=objective)
@@ -99,6 +108,7 @@ class RouteOptimizer:
             max_minutes=max_minutes,
             truck_capacity_lbs=truck_capacity_lbs,
             objective=objective,
+            priority_ids=priority_ids,
         )
         solve_time_ms = int((time.perf_counter() - start) * 1000)
         solver_name = "greedy_fallback" if ORTOOLS_AVAILABLE else "greedy"
@@ -112,6 +122,7 @@ class RouteOptimizer:
         max_minutes: float,
         truck_capacity_lbs: float,
         objective: str,
+        priority_ids: set[str],
     ) -> list[RouteStop]:
         node_lats = [driver_lat] + [l.lat for l in listings]
         node_lngs = [driver_lng] + [l.lng for l in listings]
@@ -136,12 +147,17 @@ class RouteOptimizer:
         # Prize-collecting objective: pay a penalty if we skip a stop.
         # "value" objective favors higher $ stops; "lbs" favors heavier pickups (impact, faster fill).
         if objective == "lbs":
-            prizes = [0] + [max(0, int(round(l.total_lbs * LBS_PENALTY_MULTIPLIER))) for l in listings]
+            base_prizes = [max(0, int(round(l.total_lbs * LBS_PENALTY_MULTIPLIER))) for l in listings]
         else:
-            prizes = [0] + [
+            base_prizes = [
                 max(1, int(round(l.total_value * 100)) * VALUE_PENALTY_MULTIPLIER)
                 for l in listings
             ]
+        prizes = [0]
+        for listing, prize in zip(listings, base_prizes):
+            if listing.id in priority_ids:
+                prize += PRIORITY_PENALTY_BOOST
+            prizes.append(max(1, int(prize)))
 
         manager = pywrapcp.RoutingIndexManager(node_count, 1, 0)
         routing = pywrapcp.RoutingModel(manager)
@@ -246,6 +262,7 @@ class RouteOptimizer:
         max_minutes: float,
         truck_capacity_lbs: float,
         objective: str,
+        priority_ids: set[str],
     ) -> list[RouteStop]:
         route: list[RouteStop] = []
         cur_lat, cur_lng = driver_lat, driver_lng
@@ -274,6 +291,8 @@ class RouteOptimizer:
 
                 prize = listing.total_lbs if objective == "lbs" else listing.total_value
                 score = prize / max(total_time, 0.01)
+                if listing.id in priority_ids:
+                    score += PRIORITY_SCORE_BOOST
                 if score > (best_score + GREEDY_TIE_EPSILON):
                     best, best_score, best_dist, best_travel = listing, score, dist, travel_min
                     continue

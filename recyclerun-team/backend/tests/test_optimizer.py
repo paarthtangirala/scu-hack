@@ -246,6 +246,29 @@ def test_summary_contract_stability_across_objectives(monkeypatch, objective):
     assert isinstance(summary["solve_time_ms"], int)
 
 
+def test_priority_listing_ids_are_included_when_feasible(monkeypatch):
+    monkeypatch.setattr(optimizer_module, "ORTOOLS_AVAILABLE", False)
+    opt = RouteOptimizer()
+
+    high_value = make_listing("high_value", 37.351, -121.951, mat_type="copper_wire", lbs=2.0)
+    priority_low_value = make_listing("priority", 37.352, -121.952, mat_type="cardboard", lbs=5.0)
+    listings = [high_value, priority_low_value]
+
+    stops, summary = opt.optimize(
+        37.35,
+        -121.95,
+        listings,
+        60,
+        truck_capacity_lbs=1000,
+        objective="value",
+        priority_listing_ids=[priority_low_value.id],
+    )
+
+    ids = [s.listing_id for s in stops]
+    assert priority_low_value.id in ids
+    assert summary["total_stops"] >= 1
+
+
 @pytest.mark.skipif(not optimizer_module.ORTOOLS_AVAILABLE, reason="OR-Tools not available in this environment")
 def test_ortools_objective_changes_first_stop_under_capacity_constraint():
     opt = RouteOptimizer()

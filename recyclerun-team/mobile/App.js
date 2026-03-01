@@ -40,6 +40,7 @@ export default function App() {
   const [instructionPackage, setInstructionPackage] = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [savingOnboarding, setSavingOnboarding] = useState(false);
+  const [priorityListingIds, setPriorityListingIds] = useState([]);
   const BRAND_NAME = "Bin2Bucks";
 
   const isAuthenticated = Boolean(session?.session_id && profile?.id);
@@ -58,6 +59,7 @@ export default function App() {
     setProfile(null);
     setInstructionPackage(null);
     setShowOnboarding(false);
+    setPriorityListingIds([]);
     setApiChecked(false);
     setApiHealthy(true);
     setActiveTab("home");
@@ -185,8 +187,31 @@ export default function App() {
     if (activeTab === "home") {
       return <HomeScreen onNavigate={setActiveTab} />;
     }
-    if (activeTab === "post") return <PostScreen />;
-    if (activeTab === "driver") return <DriverScreen />;
+    if (activeTab === "post") {
+      return (
+        <PostScreen
+          profile={profile}
+          onListingPosted={(listingId) => {
+            if (!listingId) return;
+            setPriorityListingIds((prev) => {
+              const next = [listingId, ...prev.filter((id) => id !== listingId)];
+              return next.slice(0, 20);
+            });
+          }}
+        />
+      );
+    }
+    if (activeTab === "driver") {
+      return (
+        <DriverScreen
+          priorityListingIds={priorityListingIds}
+          onPriorityListingsConsumed={(consumedIds = []) => {
+            if (!Array.isArray(consumedIds) || !consumedIds.length) return;
+            setPriorityListingIds((prev) => prev.filter((id) => !consumedIds.includes(id)));
+          }}
+        />
+      );
+    }
     if (activeTab === "impact") return <ImpactScreen />;
     if (activeTab === "rates") return <RatesScreen />;
     return (
