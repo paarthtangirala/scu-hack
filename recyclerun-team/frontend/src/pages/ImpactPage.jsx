@@ -1,6 +1,7 @@
 /** Owner: Anisha */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildImpactCards, loadImpactData, sourceLabel } from '../services/impactRates';
+import { getResponsiveLayout, runSafeAsync } from '../services/stabilization';
 
 export function ImpactPage() {
   const [view, setView] = useState({
@@ -9,15 +10,45 @@ export function ImpactPage() {
     source: null,
     error: null,
   });
+  const [viewportWidth, setViewportWidth] = useState(() => (
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  ));
+  const mountedRef = useRef(true);
+
+  const responsive = useMemo(() => getResponsiveLayout(viewportWidth), [viewportWidth]);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      if (mountedRef.current) {
+        setViewportWidth(window.innerWidth);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   async function refresh() {
-    setView((prev) => ({ ...prev, state: 'loading', error: null }));
-    const result = await loadImpactData();
-    setView(result);
+    if (mountedRef.current) {
+      setView((prev) => ({ ...prev, state: 'loading', error: null }));
+    }
+
+    const result = await runSafeAsync(
+      () => loadImpactData(),
+      { state: 'error', source: null, stats: null, error: 'Failed to load impact data' }
+    );
+
+    if (mountedRef.current) {
+      setView(result || { state: 'error', source: null, stats: null, error: 'Failed to load impact data' });
+    }
   }
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, []);
 
   const cards = useMemo(() => buildImpactCards(view.stats), [view.stats]);
@@ -51,7 +82,7 @@ export function ImpactPage() {
       <div className="content-area">
         <div className="card">
           <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>No impact data yet</div>
-          <div style={{ color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+          <div style={{ color: 'var(--muted)', fontFamily: 'var(--mono)', fontSize: responsive.impact.sourceFontSize }}>
             Source: {sourceLabel(view.source)}
           </div>
         </div>
@@ -61,7 +92,11 @@ export function ImpactPage() {
 
   return (
     <div className="content-area">
-      <div className="card mb-2" style={{ fontFamily: 'var(--mono)', color: 'var(--muted)' }}>
+      <div className="card mb-2" style={{
+        fontFamily: 'var(--mono)',
+        color: 'var(--muted)',
+        fontSize: responsive.impact.sourceFontSize,
+      }}>
         Source: {sourceLabel(view.source)}
       </div>
       <div className="impact-grid mb-2">
@@ -73,7 +108,7 @@ export function ImpactPage() {
           </div>
         ))}
       </div>
-      <div className="card">
+      <div className="card" style={{ padding: responsive.spacing.cardPadding }}>
         <div style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '1rem' }}>How RecycleRun Supports SB 1383</div>
         <div style={{ fontFamily: 'var(--mono)', fontSize: '0.88rem', color: 'var(--muted)', lineHeight: 1.9 }}>
           California's SB 1383 mandates 75% reduction in organic and recyclable waste sent to landfills.
