@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { api } from "../services/api";
 import { Card, SectionTitle, StatPill, colors } from "../components/ui";
@@ -8,22 +8,37 @@ export function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [health, setHealth] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const inFlightRef = useRef(false);
 
   const load = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
-    const response = await api.health();
-    if (response.ok) {
-      setHealth(response.data);
-      setErrorMessage("");
-    } else {
-      const hint = response?.hint ? ` ${response.hint}` : "";
-      setErrorMessage(`Health check failed: ${response?.error || "Unknown error"}${hint}`);
+    try {
+      const response = await api.health();
+      if (response.ok) {
+        setHealth(response.data);
+        setErrorMessage("");
+      } else {
+        setHealth(null);
+        const hint = response?.hint ? ` ${response.hint}` : "";
+        setErrorMessage(`Health check failed: ${response?.error || "Unknown error"}${hint}`);
+      }
+    } finally {
+      setLoading(false);
+      inFlightRef.current = false;
     }
-    setLoading(false);
   }, []);
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      load();
+    }, 15000);
+    return () => clearInterval(timer);
   }, [load]);
 
   return (
@@ -43,6 +58,7 @@ export function HomeScreen() {
           <StatPill label="Seed Listings" value={String(health?.seeded_listings || 0)} />
           <StatPill label="Total Listings" value={String(health?.total_listings || 0)} />
         </View>
+        {loading ? <Text style={styles.muted}>Checking API health...</Text> : null}
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
         <Text style={styles.muted}>API base: {API_BASE_URL}</Text>
         <Text style={styles.muted}>API source: {API_BASE_SOURCE}</Text>

@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "../config";
 
 const REQUEST_TIMEOUT_MS = 30000;
+const MAX_DEBUG_SNIPPET = 180;
 
 function firstBackendErrorMessage(data) {
   const errors = Array.isArray(data?.errors) ? data.errors : [];
@@ -66,6 +67,21 @@ function formatNetworkError(path, error) {
   };
 }
 
+function compactSnippet(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > MAX_DEBUG_SNIPPET ? `${text.slice(0, MAX_DEBUG_SNIPPET)}...` : text;
+}
+
+function isHealthPayloadValid(data) {
+  return (
+    data != null &&
+    typeof data === "object" &&
+    typeof data.status === "string" &&
+    typeof data.seeded_listings === "number" &&
+    typeof data.total_listings === "number"
+  );
+}
+
 async function request(path, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -79,11 +95,13 @@ async function request(path, options = {}) {
     });
     const text = await response.text();
     let data = {};
+    let parsed = true;
     if (text) {
       try {
         data = JSON.parse(text);
       } catch {
-        data = { raw: text };
+        parsed = false;
+        data = { raw: compactSnippet(text) };
       }
     }
 
@@ -94,6 +112,17 @@ async function request(path, options = {}) {
         code: "server_error",
         hint: hintForServerStatus(response.status),
         error: formatServerError(response.status, data),
+        data,
+      };
+    }
+
+    if (text && !parsed) {
+      return {
+        ok: false,
+        status: response.status,
+        code: "invalid_json",
+        hint: "API returned non-JSON content. Verify API base points to the RecycleRun backend.",
+        error: `Invalid JSON response for ${path}`,
         data,
       };
     }
@@ -115,7 +144,19 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  health: () => request("/health"),
+  health: async () => {
+    const response = await request("/health");
+    if (!response.ok) return response;
+    if (isHealthPayloadValid(response.data)) return response;
+    return {
+      ok: false,
+      status: response.status,
+      code: "invalid_health_payload",
+      hint: "Unexpected /health payload. Confirm API base points to the RecycleRun backend.",
+      error: "Health endpoint returned unexpected JSON shape.",
+      data: response.data,
+    };
+  },
   getImpact: () => request("/impact"),
   getMaterials: () => request("/materials"),
   getListings: (status = "available") =>
