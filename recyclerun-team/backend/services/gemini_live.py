@@ -37,6 +37,7 @@ Return strict JSON only:
   "materials": [
     {
       "type": "material_key",
+      "count": 1,
       "lbs": 1.2,
       "confidence": 0.85,
       "raw_confidence": 0.91,
@@ -49,6 +50,11 @@ Valid material_key values:
 cardboard, aluminum_cans, plastic_pet, plastic_hdpe, glass_bottles,
 copper_wire, scrap_aluminum, ewaste_noncrt, ewaste_crt, steel_iron,
 newspaper, scrap_metal_mixed
+Rules:
+- If multiple objects of same type are visible, aggregate them into ONE row with count > 1.
+- lbs must be the TOTAL lbs for that type across all visible objects.
+- For cluttered frames, include all detectable material types in separate rows.
+- Use realistic weights (do not output tiny single-item placeholder weights for multi-item scenes).
 Do not include any keys outside this schema."""
 
 MATERIAL_TYPE_ALIASES = {
@@ -77,6 +83,13 @@ MATERIAL_TYPE_ALIASES = {
     "e waste crt": "ewaste_crt",
     "e waste noncrt": "ewaste_noncrt",
     "ewaste": "ewaste_noncrt",
+}
+
+MIN_UNIT_LBS_BY_TYPE = {
+    "aluminum_cans": 0.03,
+    "plastic_pet": 0.04,
+    "plastic_hdpe": 0.05,
+    "glass_bottles": 0.35,
 }
 
 
@@ -497,10 +510,15 @@ class GeminiLiveService:
                 if mat_type not in MATERIAL_RATES:
                     continue
                 lbs_raw = self._extract_lbs(item)
+                count = self._extract_count(item)
                 try:
                     lbs = float(lbs_raw)
                 except (TypeError, ValueError):
                     continue
+                if count > 1:
+                    min_unit = MIN_UNIT_LBS_BY_TYPE.get(mat_type)
+                    if min_unit is not None:
+                        lbs = max(lbs, round(min_unit * count, 3))
                 lbs = round(max(min_lbs, min(max_lbs, lbs)), 1)
                 material = Material(type=mat_type, lbs=lbs)
                 row = material.to_dict()
@@ -509,6 +527,8 @@ class GeminiLiveService:
                     self._safe_float(item.get("score"), self._safe_float(item.get("probability"), 0.8)),
                 )
                 row["confidence"] = max(0.0, min(1.0, confidence))
+                if count > 0:
+                    row["count"] = int(count)
                 raw_confidence = self._safe_float(item.get("raw_confidence"), None)
                 if raw_confidence is not None:
                     row["raw_confidence"] = raw_confidence
@@ -651,6 +671,25 @@ class GeminiLiveService:
                         return match.group(1)
                 return value
         return None
+
+    @staticmethod
+    def _extract_count(item: dict) -> int:
+        for key in ("count", "quantity", "instances", "num_items"):
+            value = item.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                match = re.search(r"(\d+)", value.strip())
+                if match:
+                    try:
+                        return max(1, int(match.group(1)))
+                    except ValueError:
+                        continue
+            try:
+                return max(1, int(float(value)))
+            except (TypeError, ValueError):
+                continue
+        return 1
 
     @staticmethod
     def _balanced_json_objects(text: str) -> Iterable[str]:

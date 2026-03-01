@@ -269,6 +269,34 @@ def test_parse_accepts_top_level_array_materials():
     assert parsed["materials"][0]["lbs"] == 1.9
 
 
+def test_parse_scales_multi_item_weight_by_count_floor():
+    service = GeminiLiveService()
+    parsed = service._parse_prediction(
+        '{"materials":[{"type":"aluminum_cans","count":4,"lbs":0.1},{"type":"plastic_pet","count":2,"lbs":0.1}]}'
+    )
+
+    assert parsed is not None
+    by_type = {row["type"]: row for row in parsed["materials"]}
+    # Uses min-unit floors when count > 1.
+    assert by_type["aluminum_cans"]["lbs"] >= 0.1
+    assert by_type["aluminum_cans"]["count"] == 4
+    assert by_type["plastic_pet"]["lbs"] >= 0.1
+    assert by_type["plastic_pet"]["count"] == 2
+
+
+def test_parse_extracts_count_from_quantity_alias():
+    service = GeminiLiveService()
+    parsed = service._parse_prediction(
+        '{"materials":[{"material":"aluminum cans","quantity":"5 cans","weight_lbs":"0.2"}]}'
+    )
+
+    assert parsed is not None
+    assert len(parsed["materials"]) == 1
+    row = parsed["materials"][0]
+    assert row["type"] == "aluminum_cans"
+    assert row["count"] == 5
+
+
 def test_non_200_response_log_includes_upstream_error_snippet(monkeypatch, caplog):
     service = GeminiLiveService()
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
