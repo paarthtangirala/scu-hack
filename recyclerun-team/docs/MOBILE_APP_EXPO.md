@@ -28,6 +28,7 @@ cd recyclerun-team
 This auto-detects your laptop LAN IP and writes `mobile/.env` with:
 
 - `EXPO_PUBLIC_API_BASE_URL=http://<YOUR_LAN_IP>:5050/api`
+- `EXPO_PUBLIC_AUTO_LAN=1` (default): if Expo Go bundle host is a LAN IP and `.env` is stale (`loca.lt`/localhost), app auto-corrects API base at runtime.
 
 ## 3) Start Expo
 

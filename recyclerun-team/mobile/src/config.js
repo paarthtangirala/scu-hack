@@ -1,4 +1,52 @@
-export const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL || "http://127.0.0.1:5000/api";
+import { NativeModules } from "react-native";
+
+const DEFAULT_API_PORT = "5050";
+const ENV_API_BASE_URL = String(process.env.EXPO_PUBLIC_API_BASE_URL || "").trim();
+const AUTO_LAN_ENABLED = String(process.env.EXPO_PUBLIC_AUTO_LAN || "1") !== "0";
+const API_PORT = String(process.env.EXPO_PUBLIC_API_PORT || DEFAULT_API_PORT).trim() || DEFAULT_API_PORT;
+
+function stripTrailingSlash(url) {
+  return String(url || "").replace(/\/+$/, "");
+}
+
+function isIpv4(host) {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+}
+
+function hostFromScriptURL(scriptURL) {
+  if (!scriptURL) return "";
+  try {
+    return new URL(scriptURL).hostname || "";
+  } catch {
+    const match = String(scriptURL).match(/^[a-z]+:\/\/([^/:?#]+)(?::\d+)?/i);
+    return match?.[1] || "";
+  }
+}
+
+function deriveLanApiBaseUrl() {
+  const scriptURL = NativeModules?.SourceCode?.scriptURL;
+  const host = hostFromScriptURL(scriptURL);
+  if (!host || !isIpv4(host)) return "";
+  if (host === "127.0.0.1" || host === "0.0.0.0") return "";
+  return `http://${host}:${API_PORT}/api`;
+}
+
+function shouldPreferAutoLan(envApiBaseUrl) {
+  if (!envApiBaseUrl) return true;
+  const lower = envApiBaseUrl.toLowerCase();
+  return (
+    lower.includes("loca.lt") ||
+    lower.includes("localhost") ||
+    lower.includes("127.0.0.1")
+  );
+}
+
+const autoLanApiBaseUrl =
+  AUTO_LAN_ENABLED && shouldPreferAutoLan(ENV_API_BASE_URL) ? deriveLanApiBaseUrl() : "";
+
+export const API_BASE_URL = stripTrailingSlash(
+  autoLanApiBaseUrl || ENV_API_BASE_URL || `http://127.0.0.1:${DEFAULT_API_PORT}/api`,
+);
+export const API_BASE_SOURCE = autoLanApiBaseUrl ? "auto-lan" : ENV_API_BASE_URL ? "env" : "default";
 
 export const APP_NAME = "RecycleRun";

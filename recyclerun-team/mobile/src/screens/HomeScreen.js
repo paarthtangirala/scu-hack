@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { api } from "../services/api";
 import { Card, SectionTitle, StatPill, colors } from "../components/ui";
-import { API_BASE_URL } from "../config";
+import { API_BASE_SOURCE, API_BASE_URL } from "../config";
 
 export function HomeScreen() {
   const [loading, setLoading] = useState(false);
@@ -45,6 +45,7 @@ export function HomeScreen() {
         </View>
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
         <Text style={styles.muted}>API base: {API_BASE_URL}</Text>
+        <Text style={styles.muted}>API source: {API_BASE_SOURCE}</Text>
       </Card>
 
       <Card>

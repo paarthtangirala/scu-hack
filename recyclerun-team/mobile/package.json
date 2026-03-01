@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "expo start",
+    "prestart": "../scripts/mobile/use-lan-api.sh",
+    "preandroid": "../scripts/mobile/use-lan-api.sh",
+    "preios": "../scripts/mobile/use-lan-api.sh",
+    "preweb": "../scripts/mobile/use-lan-api.sh",
+    "start": "expo start --lan -c",
     "start:lan": "expo start --lan -c",
     "start:tunnel": "expo start --tunnel -c",
     "android": "expo start --android",
