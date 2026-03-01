@@ -41,6 +41,15 @@ cd frontend
 npm install
 npm run dev
 # → http://localhost:5173
+
+# Terminal 3 — Mobile (Expo Go)
+cd mobile
+cp .env.example .env
+# For physical device, replace 127.0.0.1 with your laptop LAN IP
+# EXPO_PUBLIC_API_BASE_URL=http://<YOUR_LAN_IP>:5000/api
+npm install
+npm start
+# Scan QR in Expo Go
 ```
 
 For full sponsor integrations, copy `.env.example` to `.env` and add keys.
