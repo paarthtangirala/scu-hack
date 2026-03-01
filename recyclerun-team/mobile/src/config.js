@@ -2,6 +2,7 @@ import { NativeModules } from "react-native";
 
 const DEFAULT_API_PORT = "5050";
 const ENV_API_BASE_URL = String(process.env.EXPO_PUBLIC_API_BASE_URL || "").trim();
+const ENV_GOOGLE_MAPS_API_KEY = String(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || "").trim();
 const AUTO_LAN_ENABLED = String(process.env.EXPO_PUBLIC_AUTO_LAN || "1") !== "0";
 const API_PORT = String(process.env.EXPO_PUBLIC_API_PORT || DEFAULT_API_PORT).trim() || DEFAULT_API_PORT;
 
@@ -48,5 +49,6 @@ export const API_BASE_URL = stripTrailingSlash(
   autoLanApiBaseUrl || ENV_API_BASE_URL || `http://127.0.0.1:${DEFAULT_API_PORT}/api`,
 );
 export const API_BASE_SOURCE = autoLanApiBaseUrl ? "auto-lan" : ENV_API_BASE_URL ? "env" : "default";
+export const GOOGLE_MAPS_API_KEY = ENV_GOOGLE_MAPS_API_KEY;
 
 export const APP_NAME = "RecycleRun";

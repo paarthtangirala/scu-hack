@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -9,7 +10,18 @@ import {
   View,
 } from "react-native";
 import { api } from "../services/api";
+import { GOOGLE_MAPS_API_KEY } from "../config";
 import { Card, PrimaryButton, SectionTitle, SecondaryButton, StatPill, colors } from "../components/ui";
+
+let MapViewComponent = null;
+let MarkerComponent = null;
+let PolylineComponent = null;
+if (Platform.OS !== "web") {
+  const maps = require("react-native-maps");
+  MapViewComponent = maps.default;
+  MarkerComponent = maps.Marker;
+  PolylineComponent = maps.Polyline;
+}
 
 const OBJECTIVES = [
   { key: "lbs", label: "Max lbs/min" },
@@ -17,6 +29,9 @@ const OBJECTIVES = [
 ];
 const MAX_MINUTES_OPTIONS = [60, 120, 180, 240];
 const CAPACITY_OPTIONS = [500, 1000, 2000];
+const DRIVER_START = { latitude: 37.3541, longitude: -121.9552 };
+const GOOGLE_DIRECTIONS_BASE_URL = "https://maps.googleapis.com/maps/api/directions/json";
+const GOOGLE_DIRECTIONS_MAX_STOPS = 23;
 
 function nextRequestId() {
   return `mobile-accept-${Date.now()}`;
@@ -25,6 +40,80 @@ function nextRequestId() {
 function formatApiFailure(action, response) {
   const hint = response?.hint ? ` ${response.hint}` : "";
   return `${action} failed: ${response?.error || "Request failed"}${hint}`;
+}
+
+function stopCoordinate(stop) {
+  const lat = Number(stop?.lat);
+  const lng = Number(stop?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { latitude: lat, longitude: lng };
+}
+
+function fallbackRouteCoordinates(stops) {
+  const unique = [{ ...DRIVER_START }];
+  stops.forEach((point) => {
+    const prev = unique[unique.length - 1];
+    if (!prev || prev.latitude !== point.latitude || prev.longitude !== point.longitude) {
+      unique.push(point);
+    }
+  });
+  return unique;
+}
+
+function decodeGooglePolyline(encoded) {
+  if (!encoded || typeof encoded !== "string") return [];
+  const points = [];
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  while (index < encoded.length) {
+    let b;
+    let shift = 0;
+    let result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20 && index < encoded.length);
+    const dlat = (result & 1) ? ~(result >> 1) : (result >> 1);
+    lat += dlat;
+
+    shift = 0;
+    result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20 && index < encoded.length);
+    const dlng = (result & 1) ? ~(result >> 1) : (result >> 1);
+    lng += dlng;
+
+    points.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+  }
+  return points;
+}
+
+function computeRouteRegion(points) {
+  if (!points.length) {
+    return {
+      latitude: DRIVER_START.latitude,
+      longitude: DRIVER_START.longitude,
+      latitudeDelta: 0.08,
+      longitudeDelta: 0.08,
+    };
+  }
+  const lats = points.map((point) => point.latitude);
+  const lngs = points.map((point) => point.longitude);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLng + maxLng) / 2,
+    latitudeDelta: Math.max(0.03, (maxLat - minLat) * 1.8),
+    longitudeDelta: Math.max(0.03, (maxLng - minLng) * 1.8),
+  };
 }
 
 export function DriverScreen() {
@@ -41,6 +130,8 @@ export function DriverScreen() {
   const [completedIds, setCompletedIds] = useState({});
   const [collectedLbs, setCollectedLbs] = useState(0);
   const [earnedValue, setEarnedValue] = useState(0);
+  const [routePolyline, setRoutePolyline] = useState([]);
+  const [routeMapMessage, setRouteMapMessage] = useState("");
 
   const loadListings = useCallback(async () => {
     const response = await api.getListings("available");
@@ -61,6 +152,70 @@ export function DriverScreen() {
     loadListings();
   }, [loadListings]);
 
+  const hydrateRouteMap = useCallback(async (stops) => {
+    const coordinates = (stops || []).map(stopCoordinate).filter(Boolean);
+    if (!coordinates.length) {
+      setRoutePolyline([]);
+      setRouteMapMessage("");
+      return;
+    }
+
+    const limitedCoordinates = coordinates.slice(0, GOOGLE_DIRECTIONS_MAX_STOPS);
+    const truncated = coordinates.length > GOOGLE_DIRECTIONS_MAX_STOPS;
+    const fallbackCoordinates = fallbackRouteCoordinates(limitedCoordinates);
+
+    if (!GOOGLE_MAPS_API_KEY) {
+      setRoutePolyline(fallbackCoordinates);
+      setRouteMapMessage("Google Maps API key missing. Showing straight-line preview.");
+      return;
+    }
+
+    try {
+      const destination = limitedCoordinates[limitedCoordinates.length - 1];
+      const waypointPoints = limitedCoordinates
+        .slice(0, limitedCoordinates.length - 1)
+        .map((point) => `${point.latitude},${point.longitude}`);
+
+      const params = new URLSearchParams({
+        origin: `${DRIVER_START.latitude},${DRIVER_START.longitude}`,
+        destination: `${destination.latitude},${destination.longitude}`,
+        mode: "driving",
+        key: GOOGLE_MAPS_API_KEY,
+      });
+      if (waypointPoints.length) {
+        params.append("waypoints", waypointPoints.join("|"));
+      }
+
+      const response = await fetch(`${GOOGLE_DIRECTIONS_BASE_URL}?${params.toString()}`);
+      const data = await response.json();
+      const encodedPolyline = data?.routes?.[0]?.overview_polyline?.points || "";
+      const decoded = decodeGooglePolyline(encodedPolyline);
+
+      if (!response.ok || data?.status !== "OK" || decoded.length < 2) {
+        const status = data?.status || "unknown";
+        const details = data?.error_message ? ` (${data.error_message})` : "";
+        setRoutePolyline(fallbackCoordinates);
+        setRouteMapMessage(
+          `Google Directions unavailable (${status}${details}). Showing straight-line preview.` +
+            (truncated ? " Showing first 23 stops only." : ""),
+        );
+        return;
+      }
+
+      setRoutePolyline(decoded);
+      setRouteMapMessage(
+        `Google Directions route loaded for ${limitedCoordinates.length} stop(s).` +
+          (truncated ? " Showing first 23 stops only." : ""),
+      );
+    } catch (error) {
+      setRoutePolyline(fallbackCoordinates);
+      setRouteMapMessage(
+        `Failed to load Google Directions (${error?.message || "network error"}). Showing straight-line preview.` +
+          (truncated ? " Showing first 23 stops only." : ""),
+      );
+    }
+  }, []);
+
   const buildRoute = async () => {
     setLoading(true);
     setMessage("");
@@ -77,6 +232,7 @@ export function DriverScreen() {
       return;
     }
     setRoute(response.data);
+    hydrateRouteMap(response.data?.stops || []);
     setAccepted(false);
     setCompletedIds({});
     setCollectedLbs(0);
@@ -140,6 +296,16 @@ export function DriverScreen() {
   };
 
   const routeSummary = route?.summary || {};
+  const routeStops = route?.stops || [];
+  const routeStopCoordinates = useMemo(
+    () => routeStops.map(stopCoordinate).filter(Boolean),
+    [routeStops],
+  );
+  const mapCoordinates = useMemo(
+    () => (routePolyline.length ? routePolyline : fallbackRouteCoordinates(routeStopCoordinates)),
+    [routePolyline, routeStopCoordinates],
+  );
+  const mapRegion = useMemo(() => computeRouteRegion(mapCoordinates), [mapCoordinates]);
   const availableCount = useMemo(() => listings.filter((item) => item.status === "available").length, [listings]);
 
   return (
@@ -225,6 +391,8 @@ export function DriverScreen() {
             }
             await refresh();
             setRoute(null);
+            setRoutePolyline([]);
+            setRouteMapMessage("");
             setAccepted(false);
             setCompletedIds({});
             setCollectedLbs(0);
@@ -232,8 +400,46 @@ export function DriverScreen() {
             setMessage("Demo data reset");
           }} />
         </View>
+        <Text style={styles.helperText}>Optimizer includes both demo seed listings and newly posted available listings.</Text>
         {accepted ? <Text style={styles.acceptedText}>Route accepted and active</Text> : null}
       </Card>
+
+      {route?.stops?.length ? (
+        <Card>
+          <Text style={styles.stopsTitle}>Route Map (Google Maps)</Text>
+          {MapViewComponent ? (
+            <MapViewComponent style={styles.map} initialRegion={mapRegion}>
+              <MarkerComponent coordinate={DRIVER_START} title="Driver Start" description="Santa Clara base" />
+              {routeStops.map((stop, idx) => {
+                const coordinate = stopCoordinate(stop);
+                if (!coordinate) return null;
+                return (
+                  <MarkerComponent
+                    key={`stop-marker-${stop.listing_id || stop.id}`}
+                    coordinate={coordinate}
+                    title={`${idx + 1}. ${stop.household_name || "Listing"}`}
+                    description={stop.address || ""}
+                  />
+                );
+              })}
+              {PolylineComponent && mapCoordinates.length >= 2 ? (
+                <PolylineComponent
+                  coordinates={mapCoordinates}
+                  strokeColor={colors.primary}
+                  strokeWidth={4}
+                />
+              ) : null}
+            </MapViewComponent>
+          ) : (
+            <View style={styles.mapUnsupported}>
+              <Text style={styles.stopMeta}>Map preview is only available on iOS/Android native runtimes.</Text>
+            </View>
+          )}
+          <Text style={styles.mapCaption}>
+            {routeMapMessage || "Showing route geometry for the optimized stop sequence."}
+          </Text>
+        </Card>
+      ) : null}
 
       {route?.stops?.length ? (
         <Card>
@@ -319,10 +525,34 @@ const styles = StyleSheet.create({
   actionsRow: {
     gap: 8,
   },
+  helperText: {
+    marginTop: 8,
+    color: colors.muted,
+    fontSize: 12,
+  },
   acceptedText: {
     marginTop: 8,
     color: colors.primary,
     fontWeight: "700",
+  },
+  map: {
+    height: 250,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: "hidden",
+  },
+  mapUnsupported: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 10,
+    backgroundColor: "#FCFBF6",
+  },
+  mapCaption: {
+    marginTop: 8,
+    color: colors.muted,
+    fontSize: 12,
   },
   stopsTitle: {
     fontSize: 16,

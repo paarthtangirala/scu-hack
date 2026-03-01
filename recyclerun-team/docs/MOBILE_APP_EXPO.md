@@ -29,6 +29,7 @@ This auto-detects your laptop LAN IP and writes `mobile/.env` with:
 
 - `EXPO_PUBLIC_API_BASE_URL=http://<YOUR_LAN_IP>:5050/api`
 - `EXPO_PUBLIC_AUTO_LAN=1` (default): if Expo Go bundle host is a LAN IP and `.env` is stale (`loca.lt`/localhost), app auto-corrects API base at runtime.
+- preserves `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` if it already exists.
 
 ## 3) Start Expo
 
@@ -64,6 +65,19 @@ cd mobile
 npm start
 ```
 
+### Optional: enable in-app Google route rendering
+
+Add this to `mobile/.env`:
+
+```bash
+EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=<your-google-maps-key>
+```
+
+Required Google services for this key:
+
+- Maps SDK for iOS / Android (for map tiles in app)
+- Directions API (for optimized route polyline)
+
 ## 6) Smoke Checklist (2 min)
 
 1. Open **Home** tab:
@@ -72,6 +86,7 @@ npm start
    - Create a household listing with manual materials.
 3. Open **Driver** tab:
    - Build route.
+   - Verify **Route Map (Google Maps)** renders polyline + stop markers.
    - Accept route.
    - Mark one stop completed.
 4. Open **Impact** tab:
@@ -80,6 +95,14 @@ npm start
    - Material rates list loads.
 
 ## 7) Common Fixes
+
+- Route map shows straight lines instead of Google route:
+  - Set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` in `mobile/.env`.
+  - Enable **Directions API** for that key in Google Cloud.
+  - Restrict key for mobile app usage only (iOS bundle / Android app).
+- Route map says Google Directions unavailable:
+  - Confirm key is valid and billing is enabled in Google Cloud.
+  - Confirm route has <= 23 stops (driver screen truncates map fetch beyond this).
 
 - `Network request failed` in app:
   - Verify phone and laptop are on same Wi-Fi.
