@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Image,
+  ActivityIndicator,
+  Animated,
+  Easing,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,7 +11,6 @@ import {
   View,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import * as ImagePicker from "expo-image-picker";
 
 import { Card, PrimaryButton, SectionTitle, SecondaryButton, colors } from "../components/ui";
 import { API_BASE_URL, LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
@@ -29,6 +30,7 @@ function formatApiFailure(action, response) {
 }
 
 const LIVE_MIN_PER_ITEM_LBS = 0.1;
+const SCAN_PLACEHOLDER = "rgba(120, 145, 122, 0.9)";
 
 function normalizeLiveDetectionCount(rawCount) {
   const count = Number(rawCount);
@@ -60,6 +62,14 @@ function buildDetectionSignature(rows) {
   return normalized.join("|");
 }
 
+function materialDisplayName(materialMap, type) {
+  const fallback = String(type || "").replace(/_/g, " ").trim();
+  if (!type) return fallback;
+  const label = materialMap?.[type]?.label;
+  if (typeof label !== "string" || !label.trim()) return fallback;
+  return label.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export function PostScreen({ profile = null, onListingPosted = () => {} }) {
   const profileName = String(profile?.display_name || "").trim();
   const profilePhone = String(profile?.phone || "").trim();
@@ -74,16 +84,13 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     notes: "",
   });
   const [message, setMessage] = useState("");
-  const [imageUri, setImageUri] = useState("");
   const [aiMaterials, setAiMaterials] = useState([]);
   const [manualRows, setManualRows] = useState([]);
   const [lockedTypes, setLockedTypes] = useState([]);
   const lockedTypesRef = useRef([]);
   const [manualType, setManualType] = useState("cardboard");
   const [manualLbs, setManualLbs] = useState("");
-  const [loadingClassify, setLoadingClassify] = useState(false);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
-  const [captureMode, setCaptureMode] = useState("photo");
   const [liveSupported, setLiveSupported] = useState(true);
   const [aiSource, setAiSource] = useState("");
   const [liveSession, setLiveSession] = useState(null);
@@ -96,6 +103,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
   const [scanDecisionPromptVisible, setScanDecisionPromptVisible] = useState(false);
   const [livePausedForReview, setLivePausedForReview] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+
   const cameraRef = useRef(null);
   const liveSessionIdRef = useRef("");
   const frameLoopRef = useRef(null);
@@ -105,6 +113,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
   const pendingDetectionQueueRef = useRef([]);
   const scanDecisionPromptVisibleRef = useRef(false);
   const lastPromptSignatureRef = useRef("");
+  const scanPulse = useRef(new Animated.Value(0)).current;
 
   const materialKeys = useMemo(() => Object.keys(materials), [materials]);
   const liveFlowStage = useMemo(() => {
@@ -114,6 +123,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     if (scanDecisionPromptVisible) return "decision";
     return "scanning";
   }, [liveRunning, pendingDetection, scanDecisionPromptVisible, startingLive]);
+
   const liveFlowMessage = useMemo(() => {
     if (liveFlowStage === "starting") return "Starting session and capturing first frame.";
     if (liveFlowStage === "review") return "Review detection, then add or skip.";
@@ -121,6 +131,21 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     if (liveFlowStage === "scanning") return "Scanning camera feed and waiting for next detection.";
     return "Tap Start Live Preview to begin guided scan mode.";
   }, [liveFlowStage]);
+
+  const activelyScanning = useMemo(
+    () => liveRunning && !startingLive && !livePausedForReview && !pendingDetection && !scanDecisionPromptVisible,
+    [liveRunning, startingLive, livePausedForReview, pendingDetection, scanDecisionPromptVisible],
+  );
+
+  const scanPulseScale = useMemo(
+    () => scanPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] }),
+    [scanPulse],
+  );
+
+  const scanPulseOpacity = useMemo(
+    () => scanPulse.interpolate({ inputRange: [0, 1], outputRange: [0.65, 1] }),
+    [scanPulse],
+  );
 
   useEffect(() => {
     lockedTypesRef.current = lockedTypes;
@@ -141,6 +166,35 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
   useEffect(() => {
     scanDecisionPromptVisibleRef.current = scanDecisionPromptVisible;
   }, [scanDecisionPromptVisible]);
+
+  useEffect(() => {
+    if (!activelyScanning) {
+      scanPulse.stopAnimation();
+      scanPulse.setValue(0);
+      return;
+    }
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanPulse, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scanPulse, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulse.start();
+    return () => {
+      pulse.stop();
+      scanPulse.setValue(0);
+    };
+  }, [activelyScanning, scanPulse]);
 
   useEffect(() => {
     if (!cameraPermission?.granted) {
@@ -196,10 +250,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
         return;
       }
       setLiveSupported(false);
-      setCaptureMode("photo");
-      setMessage(
-        `Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`,
-      );
+      setMessage(`Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`);
     })();
     return () => {
       mounted = false;
@@ -212,32 +263,31 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     setLockedTypes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
   }, []);
 
-  const normalizeAiRows = useCallback(
-    (rows) => {
-      const locked = new Set(lockedTypesRef.current);
-      const merged = new Map();
-      const order = [];
-      (Array.isArray(rows) ? rows : []).forEach((row) => {
-        const type = typeof row?.type === "string" ? row.type.trim() : "";
-        const safeCount = normalizeLiveDetectionCount(row?.count);
-        const lbs = normalizeLiveDetectionLbs(row?.lbs, safeCount);
-        if (!type || lbs <= 0 || locked.has(type)) return;
-        if (!merged.has(type)) {
-          merged.set(type, { lbs, count: safeCount });
-          order.push(type);
-          return;
-        }
-        const current = merged.get(type);
-        merged.set(type, { lbs: current.lbs + lbs, count: current.count + safeCount });
-      });
-      return order.map((type) => ({
-        type,
-        lbs: Math.round(merged.get(type).lbs * 10) / 10,
-        count: merged.get(type).count,
-      }));
-    },
-    [],
-  );
+  const normalizeAiRows = useCallback((rows) => {
+    const locked = new Set(lockedTypesRef.current);
+    const merged = new Map();
+    const order = [];
+
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const type = typeof row?.type === "string" ? row.type.trim() : "";
+      const safeCount = normalizeLiveDetectionCount(row?.count);
+      const lbs = normalizeLiveDetectionLbs(row?.lbs, safeCount);
+      if (!type || lbs <= 0 || locked.has(type)) return;
+      if (!merged.has(type)) {
+        merged.set(type, { lbs, count: safeCount });
+        order.push(type);
+        return;
+      }
+      const current = merged.get(type);
+      merged.set(type, { lbs: current.lbs + lbs, count: current.count + safeCount });
+    });
+
+    return order.map((type) => ({
+      type,
+      lbs: Math.round(merged.get(type).lbs * 10) / 10,
+      count: merged.get(type).count,
+    }));
+  }, []);
 
   const addManualRow = () => {
     const lbs = Number(manualLbs);
@@ -268,41 +318,6 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
         return { ...row, lbs: Number.isFinite(parsed) && parsed > 0 ? parsed : row.lbs };
       }),
     );
-  };
-
-  const pickAndClassifyImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      setMessage("Photo permission is required for AI classify");
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: "images",
-      allowsEditing: true,
-      quality: 0.7,
-      base64: true,
-    });
-    if (result.canceled || !result.assets?.length) {
-      return;
-    }
-
-    const asset = result.assets[0];
-    setImageUri(asset.uri || "");
-    setLoadingClassify(true);
-    setMessage("");
-
-    const classify = await api.classifyImage(asset.base64 || "");
-    if (!classify.ok) {
-      setMessage(formatApiFailure("Classify", classify));
-      setAiMaterials([]);
-      setAiSource("");
-    } else {
-      setAiMaterials(normalizeAiRows(classify.data?.materials || []));
-      setAiSource(classify.data?.source || "amd");
-      setMessage("AI materials detected. Review and submit listing.");
-    }
-    setLoadingClassify(false);
   };
 
   const clearLiveFrameLoop = useCallback(() => {
@@ -344,27 +359,28 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
           skipProcessing: true,
         });
         if (!photo?.base64) return;
+
         const response = await api.sendLiveVisionFrame(sessionId, {
           frame_base64: photo.base64,
           mime_type: "image/jpeg",
         });
+
         if (!response.ok) {
           if (response.status === 404) {
             setLiveSupported(false);
-            setCaptureMode("photo");
-            setMessage(
-              `Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`,
-            );
+            setMessage(`Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`);
             return;
           }
           setMessage(formatApiFailure("Live preview", response));
           return;
         }
+
         setAiSource(response.data?.source || "gemini_live");
         const normalizedRows = normalizeAiRows(response.data?.materials || []);
         const detectionSignature = buildDetectionSignature(normalizedRows);
         const fromCache = Boolean(response.data?.from_cache);
         setAiMaterials(normalizedRows);
+
         if (response.data?.source === "gemini_live_demo") {
           const fallbackReason = String(response.data?.notes || "")
             .replace(/^Live fallback:\s*/i, "")
@@ -379,15 +395,12 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
           }
         } else {
           setMessage("Live AI preview active.");
-          if (
-            normalizedRows.length > 0 &&
-            !pendingDetectionRef.current &&
-            !scanDecisionPromptVisibleRef.current
-          ) {
+          if (normalizedRows.length > 0 && !pendingDetectionRef.current && !scanDecisionPromptVisibleRef.current) {
             if (detectionSignature && detectionSignature === lastPromptSignatureRef.current) {
               setMessage("No new object change detected yet. Keep scanning.");
               return;
             }
+
             const queue = normalizedRows
               .slice()
               .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0));
@@ -416,7 +429,9 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
               scanDecisionPromptVisibleRef.current = false;
               clearLiveFrameLoop();
               setMessage(
-                `Detected ${primary.type}${Number(primary.count || 1) > 1 ? ` x${Number(primary.count || 1)}` : ""} (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
+                `Detected ${materialDisplayName(materials, primary.type)}${
+                  Number(primary.count || 1) > 1 ? ` x${Number(primary.count || 1)}` : ""
+                } (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
               );
             }
           }
@@ -433,11 +448,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
         frameBusyRef.current = false;
       }
     },
-    [
-      clearLiveFrameLoop,
-      normalizeAiRows,
-      stopLivePreview,
-    ],
+    [clearLiveFrameLoop, materials, normalizeAiRows, stopLivePreview],
   );
 
   const runLiveLoop = useCallback(
@@ -481,7 +492,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       setScanDecisionPromptVisible(false);
       scanDecisionPromptVisibleRef.current = false;
       setMessage(
-        `${added ? "Item added." : "Item skipped."} Next detected item: ${nextDetection.type}${
+        `${added ? "Item added." : "Item skipped."} Next detected item: ${materialDisplayName(materials, nextDetection.type)}${
           Number(nextDetection.count || 1) > 1 ? ` x${Number(nextDetection.count || 1)}` : ""
         } (${Number(nextDetection.lbs || 0).toFixed(1)} lbs).`,
       );
@@ -496,7 +507,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     pendingDetectionRef.current = null;
     setScanDecisionPromptVisible(true);
     scanDecisionPromptVisibleRef.current = true;
-  }, []);
+  }, [materials]);
 
   const confirmAddDetected = useCallback(() => {
     if (!pendingDetection?.type || !Number.isFinite(Number(pendingDetection?.lbs))) {
@@ -549,10 +560,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     if (!start.ok) {
       if (start.status === 404) {
         setLiveSupported(false);
-        setCaptureMode("photo");
-        setMessage(
-          `Live session start failed: backend missing /api/live-vision routes at ${API_BASE_URL}.`,
-        );
+        setMessage(`Live session start failed: backend missing /api/live-vision routes at ${API_BASE_URL}.`);
       } else {
         setMessage(formatApiFailure("Live session start", start));
       }
@@ -593,16 +601,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     } finally {
       setStartingLive(false);
     }
-  }, [
-    cameraPermission,
-    cameraReady,
-    clearLiveFrameLoop,
-    liveRunning,
-    requestCameraPermission,
-    runLiveLoop,
-    sendLiveFrame,
-    startingLive,
-  ]);
+  }, [cameraPermission, cameraReady, liveRunning, requestCameraPermission, runLiveLoop, sendLiveFrame, startingLive]);
 
   useEffect(() => {
     return () => {
@@ -678,8 +677,7 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       address: "",
       phone: useProfileContact ? profilePhone : prev.phone,
       notes: "",
-    }));
-    setImageUri("");
+    });
     setAiMaterials([]);
     setAiSource("");
     setManualRows([]);
@@ -740,167 +738,162 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
           value={form.household_name}
           onChangeText={(text) => setForm((prev) => ({ ...prev, household_name: text }))}
           placeholder="Name"
-          style={styles.input}
+          placeholderTextColor={SCAN_PLACEHOLDER}
+          style={styles.inputField}
           editable={!useProfileContact}
         />
         <TextInput
           value={form.address}
           onChangeText={(text) => setForm((prev) => ({ ...prev, address: text }))}
           placeholder="Address"
-          style={styles.input}
+          placeholderTextColor={SCAN_PLACEHOLDER}
+          style={styles.inputField}
         />
         <TextInput
           value={form.phone}
           onChangeText={(text) => setForm((prev) => ({ ...prev, phone: text }))}
           placeholder="Phone"
-          style={styles.input}
+          placeholderTextColor={SCAN_PLACEHOLDER}
+          keyboardType="phone-pad"
+          style={styles.inputField}
           editable={!useProfileContact}
         />
         <TextInput
           value={form.notes}
           onChangeText={(text) => setForm((prev) => ({ ...prev, notes: text }))}
           placeholder="Notes"
+          placeholderTextColor={SCAN_PLACEHOLDER}
           multiline
-          style={[styles.input, styles.multiline]}
+          style={[styles.inputField, styles.multiline]}
         />
       </Card>
 
       <Card>
-        <Text style={styles.subTitle}>AI Classify (Photo)</Text>
-        <View style={styles.captureModeRow}>
-          {["photo", "live"].map((mode) => (
-            <Pressable
-              key={mode}
-              style={[
-                styles.captureModeToggle,
-                captureMode === mode ? styles.captureModeToggleActive : null,
-                mode === "live" && !liveSupported ? styles.captureModeToggleDisabled : null,
-              ]}
-              onPress={() => {
-                if (mode === "live" && !liveSupported) return;
-                setCaptureMode(mode);
-              }}
-            >
-              <Text style={captureMode === mode ? styles.captureModeTextActive : styles.captureModeText}>
-                {mode === "photo" ? "Photo Upload" : liveSupported ? "Live AI Preview" : "Live AI (Unavailable)"}
-              </Text>
-            </Pressable>
-          ))}
+        <Text style={styles.subTitle}>AI Classify (Live Preview)</Text>
+
+        {cameraPermission?.granted ? (
+          <CameraView
+            ref={cameraRef}
+            style={styles.cameraPreview}
+            facing="back"
+            onCameraReady={() => setCameraReady(true)}
+            onMountError={(event) => {
+              setCameraReady(false);
+              setMessage(`Camera mount failed: ${event?.nativeEvent?.message || "Unknown camera error"}`);
+            }}
+          />
+        ) : (
+          <View style={styles.permissionBox}>
+            <Text style={styles.permissionText}>Camera permission required for live preview.</Text>
+            <SecondaryButton title="Enable Camera" onPress={requestCameraPermission} />
+          </View>
+        )}
+
+        <View style={styles.liveButtonRow}>
+          <PrimaryButton
+            title={liveRunning ? "Stop Live Preview" : startingLive ? "Starting Live Preview..." : "Start Live Preview"}
+            onPress={liveRunning ? stopLivePreview : startLivePreview}
+            loading={startingLive}
+            disabled={
+              startingLive ||
+              (cameraPermission?.granted && !cameraReady && !liveRunning) ||
+              !liveSupported
+            }
+          />
+          <SecondaryButton title="Reset AI Suggestions" onPress={resetAiSuggestions} />
         </View>
 
-        {captureMode === "photo" ? (
-          <>
-            {imageUri ? <Image source={{ uri: imageUri }} style={styles.preview} /> : null}
-            <PrimaryButton
-              title={loadingClassify ? "Classifying..." : "Pick Image and Classify"}
-              onPress={pickAndClassifyImage}
-              loading={loadingClassify}
-              disabled={loadingClassify}
-            />
-          </>
-        ) : (
-          <>
-            {cameraPermission?.granted ? (
-              <CameraView
-                ref={cameraRef}
-                style={styles.cameraPreview}
-                facing="back"
-                onCameraReady={() => setCameraReady(true)}
-                onMountError={(event) => {
-                  setCameraReady(false);
-                  setMessage(`Camera mount failed: ${event?.nativeEvent?.message || "Unknown camera error"}`);
-                }}
-              />
-            ) : (
-              <View style={styles.permissionBox}>
-                <Text style={styles.permissionText}>Camera permission required for live preview.</Text>
-                <SecondaryButton title="Enable Camera" onPress={requestCameraPermission} />
-              </View>
-            )}
-            <View style={styles.liveButtonRow}>
-              <PrimaryButton
-                title={liveRunning ? "Stop Live Preview" : startingLive ? "Starting Live Preview..." : "Start Live Preview"}
-                onPress={liveRunning ? stopLivePreview : startLivePreview}
-                loading={startingLive}
-                disabled={
-                  loadingClassify ||
-                  startingLive ||
-                  (cameraPermission?.granted && !cameraReady && !liveRunning)
-                }
-              />
-              <SecondaryButton title="Reset AI Suggestions" onPress={resetAiSuggestions} />
+        {activelyScanning ? (
+          <Animated.View
+            style={[
+              styles.scanBanner,
+              {
+                opacity: scanPulseOpacity,
+                transform: [{ scale: scanPulseScale }],
+              },
+            ]}
+          >
+            <ActivityIndicator color={colors.primaryDark} />
+            <Text style={styles.scanBannerText}>AI scanning frame stream...</Text>
+          </Animated.View>
+        ) : null}
+
+        <Text style={styles.liveHint}>
+          Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
+        </Text>
+
+        <View style={styles.flowCard}>
+          <Text style={styles.flowTitle}>Live Flow</Text>
+          <View style={styles.flowRow}>
+            <View style={[styles.flowPill, liveFlowStage !== "idle" ? styles.flowPillActive : null]}>
+              <Text style={styles.flowPillText}>Start</Text>
             </View>
-            <Text style={styles.liveHint}>
-              Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
+            <View style={[styles.flowPill, liveFlowStage === "scanning" ? styles.flowPillActive : null]}>
+              <Text style={styles.flowPillText}>Detect</Text>
+            </View>
+            <View style={[styles.flowPill, liveFlowStage === "review" ? styles.flowPillActive : null]}>
+              <Text style={styles.flowPillText}>Confirm</Text>
+            </View>
+            <View style={[styles.flowPill, liveFlowStage === "decision" ? styles.flowPillActive : null]}>
+              <Text style={styles.flowPillText}>Continue</Text>
+            </View>
+          </View>
+          <Text style={styles.flowCaption}>{liveFlowMessage}</Text>
+        </View>
+
+        {pendingDetection ? (
+          <View style={styles.confirmBox}>
+            <Text style={styles.confirmTitle}>Detected Item</Text>
+            <Text style={styles.confirmText}>
+              {materialDisplayName(materials, pendingDetection.type)}
+              {Number(pendingDetection.count || 1) > 1 ? ` x${Number(pendingDetection.count || 1)}` : ""}
+              {" - "}
+              {Number(pendingDetection.lbs || 0).toFixed(1)} lbs
             </Text>
-            <View style={styles.flowCard}>
-              <Text style={styles.flowTitle}>Live Flow</Text>
-              <View style={styles.flowRow}>
-                <View style={[styles.flowPill, liveFlowStage !== "idle" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Start</Text>
-                </View>
-                <View style={[styles.flowPill, liveFlowStage === "scanning" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Detect</Text>
-                </View>
-                <View style={[styles.flowPill, liveFlowStage === "review" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Confirm</Text>
-                </View>
-                <View style={[styles.flowPill, liveFlowStage === "decision" ? styles.flowPillActive : null]}>
-                  <Text style={styles.flowPillText}>Continue</Text>
-                </View>
+            <Text style={styles.confirmText}>Add this item to the listing?</Text>
+
+            {latestFrameDetections.length > 1 ? (
+              <View style={styles.detectedGroup}>
+                <Text style={styles.detectedGroupTitle}>All Categories In Current Frame</Text>
+                {latestFrameDetections.map((row, idx) => (
+                  <Text key={`${row.type}-${idx}`} style={styles.detectedGroupRow}>
+                    {materialDisplayName(materials, row.type)}
+                    {Number(row.count || 1) > 1 ? ` x${Number(row.count || 1)}` : ""}
+                    {" - "}
+                    {Number(row.lbs || 0).toFixed(1)} lbs
+                  </Text>
+                ))}
               </View>
-              <Text style={styles.flowCaption}>{liveFlowMessage}</Text>
+            ) : null}
+
+            <View style={styles.confirmActions}>
+              <PrimaryButton title="Add Item" onPress={confirmAddDetected} />
+              <SecondaryButton title="Skip Item" onPress={skipDetected} />
             </View>
-            {pendingDetection ? (
-              <View style={styles.confirmBox}>
-                <Text style={styles.confirmTitle}>Detected Item</Text>
-                <Text style={styles.confirmText}>
-                  {materials[pendingDetection.type]?.emoji || "♻️"} {pendingDetection.type}
-                  {Number(pendingDetection.count || 1) > 1 ? ` x${Number(pendingDetection.count || 1)}` : ""}
-                  {" - "}
-                  {Number(pendingDetection.lbs || 0).toFixed(1)} lbs
-                </Text>
-                <Text style={styles.confirmText}>Add this item to the listing?</Text>
-                {latestFrameDetections.length > 1 ? (
-                  <View style={styles.detectedGroup}>
-                    <Text style={styles.detectedGroupTitle}>All Categories In Current Frame</Text>
-                    {latestFrameDetections.map((row, idx) => (
-                      <Text key={`${row.type}-${idx}`} style={styles.detectedGroupRow}>
-                        {materials[row.type]?.emoji || "♻️"} {row.type}
-                        {Number(row.count || 1) > 1 ? ` x${Number(row.count || 1)}` : ""}
-                        {" - "}
-                        {Number(row.lbs || 0).toFixed(1)} lbs
-                      </Text>
-                    ))}
-                  </View>
-                ) : null}
-                <View style={styles.confirmActions}>
-                  <PrimaryButton title="Add Item" onPress={confirmAddDetected} />
-                  <SecondaryButton title="Skip Item" onPress={skipDetected} />
-                </View>
-              </View>
-            ) : null}
-            {scanDecisionPromptVisible ? (
-              <View style={styles.confirmBox}>
-                <Text style={styles.confirmTitle}>Continue Live Scan?</Text>
-                <View style={styles.confirmActions}>
-                  <PrimaryButton title="Keep Scanning" onPress={resumeScanning} />
-                  <SecondaryButton title="End Live Preview" onPress={stopLivePreview} />
-                </View>
-              </View>
-            ) : null}
-          </>
-        )}
+          </View>
+        ) : null}
+
+        {scanDecisionPromptVisible ? (
+          <View style={styles.confirmBox}>
+            <Text style={styles.confirmTitle}>Continue Live Scan?</Text>
+            <View style={styles.confirmActions}>
+              <PrimaryButton title="Keep Scanning" onPress={resumeScanning} />
+              <SecondaryButton title="End Live Preview" onPress={stopLivePreview} />
+            </View>
+          </View>
+        ) : null}
+
         {aiMaterials.length ? (
           <View style={styles.materialList}>
             <Text style={styles.sourceTag}>Source: {aiSource || "unknown"}</Text>
             {aiMaterials.map((m, idx) => (
-              <Text style={styles.materialRow} key={`${m.type}-${idx}`}>
-                {materials[m.type]?.emoji || "♻️"} {m.type}
-                {Number(m.count || 1) > 1 ? ` x${Number(m.count || 1)}` : ""}
-                {" - "}
-                {Number(m.lbs).toFixed(1)} lbs
-              </Text>
+              <View style={styles.materialRow} key={`${m.type}-${idx}`}>
+                <Text style={styles.materialName}>
+                  {materialDisplayName(materials, m.type)}
+                  {Number(m.count || 1) > 1 ? ` x${Number(m.count || 1)}` : ""}
+                </Text>
+                <Text style={styles.materialWeight}>{Number(m.lbs).toFixed(1)} lbs</Text>
+              </View>
             ))}
           </View>
         ) : null}
@@ -916,25 +909,30 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
               onPress={() => setManualType(key)}
             >
               <Text style={manualType === key ? styles.chipTextActive : styles.chipText}>
-                {materials[key]?.emoji || "♻️"} {key}
+                {materialDisplayName(materials, key)}
               </Text>
             </Pressable>
           ))}
         </ScrollView>
+
         <View style={styles.inlineInputs}>
           <TextInput
             value={manualLbs}
             onChangeText={setManualLbs}
             keyboardType="decimal-pad"
             placeholder="Lbs"
-            style={[styles.input, styles.inlineInput]}
+            placeholderTextColor={SCAN_PLACEHOLDER}
+            style={[styles.inputField, styles.inlineInput]}
           />
-          <PrimaryButton title="Add" onPress={addManualRow} />
+          <Pressable style={styles.addIconButton} onPress={addManualRow}>
+            <Text style={styles.addIconText}>+</Text>
+          </Pressable>
         </View>
+
         {manualRows.map((row) => (
           <View key={row.id} style={styles.manualRow}>
             <Text style={styles.manualText}>
-              {materials[row.type]?.emoji || "♻️"} {row.type}
+              {materialDisplayName(materials, row.type)}
               {normalizeLiveDetectionCount(row.count) > 1 ? ` x${normalizeLiveDetectionCount(row.count)}` : ""}
               {" - "}
               {row.lbs.toFixed(1)} lbs
@@ -943,14 +941,22 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
               value={String(row.lbs)}
               onChangeText={(text) => updateManualRowLbs(row.id, text)}
               keyboardType="decimal-pad"
+              placeholderTextColor={SCAN_PLACEHOLDER}
               style={styles.manualLbsInput}
             />
-            <SecondaryButton title="Remove" onPress={() => removeManualRow(row.id)} />
+            <Pressable style={styles.binButton} onPress={() => removeManualRow(row.id)}>
+              <Text style={styles.binButtonText}>🗑</Text>
+            </Pressable>
           </View>
         ))}
       </Card>
 
-      {message ? <Text style={styles.message}>{message}</Text> : null}
+      {message ? (
+        <View style={styles.messageBar}>
+          <Text style={styles.message}>{message}</Text>
+        </View>
+      ) : null}
+
       <PrimaryButton
         title={loadingSubmit ? "Posting..." : "Post Listing"}
         onPress={submitListing}
@@ -963,14 +969,17 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
 
 const styles = StyleSheet.create({
   container: {
-    padding: 14,
+    paddingHorizontal: 16,
+    paddingTop: 18,
     paddingBottom: 120,
-    backgroundColor: colors.bg,
+    backgroundColor: "transparent",
   },
   label: {
     color: colors.ink,
-    marginBottom: 8,
-    fontWeight: "700",
+    fontWeight: "800",
+    fontSize: 20,
+    marginBottom: 10,
+    letterSpacing: 0.3,
   },
   labelSecondary: {
     color: colors.muted,
@@ -981,240 +990,309 @@ const styles = StyleSheet.create({
   },
   toggleRow: {
     flexDirection: "row",
-    gap: 8,
-    marginBottom: 10,
+    gap: 10,
+    marginBottom: 12,
   },
   toggle: {
     flex: 1,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingVertical: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
     alignItems: "center",
-    backgroundColor: "#FCFBF6",
+    justifyContent: "center",
+    backgroundColor: colors.cardSoft,
   },
   toggleActive: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.26,
+    shadowRadius: 14,
+    elevation: 5,
   },
   toggleDisabled: {
     opacity: 0.5,
   },
-  toggleText: { color: colors.ink, fontWeight: "600" },
-  toggleTextActive: { color: "#fff", fontWeight: "700" },
+  toggleText: {
+    color: colors.ink,
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  toggleTextActive: {
+    color: colors.primaryDark,
+    fontWeight: "800",
+    fontSize: 15,
+  },
   contactHint: {
     color: colors.muted,
     marginBottom: 8,
     fontSize: 12,
   },
-  input: {
+  inputField: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingHorizontal: 10,
+    borderRadius: 14,
+    minHeight: 50,
+    marginBottom: 10,
+    backgroundColor: colors.cardSoft,
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "600",
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    marginBottom: 8,
-    backgroundColor: "#fff",
   },
   multiline: {
-    minHeight: 70,
+    minHeight: 90,
     textAlignVertical: "top",
   },
   subTitle: {
-    fontWeight: "700",
+    fontWeight: "800",
+    fontSize: 20,
+    letterSpacing: 0.3,
     color: colors.ink,
-    marginBottom: 10,
-  },
-  preview: {
-    width: "100%",
-    height: 170,
-    borderRadius: 12,
-    marginBottom: 10,
+    marginBottom: 12,
   },
   cameraPreview: {
     width: "100%",
-    height: 220,
-    borderRadius: 12,
-    marginBottom: 10,
+    height: 260,
+    borderRadius: 18,
+    marginBottom: 12,
     overflow: "hidden",
-  },
-  captureModeRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 10,
-  },
-  captureModeToggle: {
-    flex: 1,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    paddingVertical: 8,
-    alignItems: "center",
-    backgroundColor: "#fff",
-  },
-  captureModeToggleActive: {
-    backgroundColor: "#EAF8F3",
-    borderColor: colors.primary,
-  },
-  captureModeToggleDisabled: {
-    opacity: 0.5,
-  },
-  captureModeText: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  captureModeTextActive: {
-    color: colors.primary,
-    fontSize: 12,
-    fontWeight: "700",
   },
   permissionBox: {
-    padding: 12,
-    borderRadius: 10,
+    padding: 14,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
-    marginBottom: 10,
-    backgroundColor: "#fff",
+    marginBottom: 12,
+    backgroundColor: colors.cardSoft,
   },
   permissionText: {
     color: colors.ink,
-    marginBottom: 8,
-    fontSize: 12,
+    marginBottom: 10,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
   },
   liveButtonRow: {
+    gap: 10,
+  },
+  scanBanner: {
+    marginTop: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(0, 232, 122, 0.42)",
+    backgroundColor: colors.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
+  scanBannerText: {
+    color: colors.primaryDark,
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
   liveHint: {
-    marginTop: 8,
+    marginTop: 10,
     color: colors.muted,
-    fontSize: 11,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "600",
   },
   flowCard: {
-    marginTop: 10,
-    padding: 10,
+    marginTop: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    backgroundColor: "#fff",
+    borderRadius: 14,
+    backgroundColor: colors.cardSoft,
   },
   flowTitle: {
     color: colors.ink,
-    fontSize: 13,
-    fontWeight: "700",
-    marginBottom: 8,
+    fontSize: 15,
+    fontWeight: "800",
+    marginBottom: 10,
   },
   flowRow: {
     flexDirection: "row",
-    gap: 6,
-    marginBottom: 6,
+    gap: 8,
+    marginBottom: 8,
   },
   flowPill: {
     flex: 1,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 999,
-    paddingVertical: 5,
+    paddingVertical: 7,
     alignItems: "center",
-    backgroundColor: "#FCFBF6",
+    backgroundColor: colors.surface,
   },
   flowPillActive: {
     borderColor: colors.primary,
-    backgroundColor: "#EAF8F3",
+    backgroundColor: "rgba(0, 232, 122, 0.14)",
   },
   flowPillText: {
     color: colors.ink,
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "700",
   },
   flowCaption: {
     color: colors.muted,
-    fontSize: 11,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "600",
   },
   confirmBox: {
-    marginTop: 10,
-    padding: 10,
+    marginTop: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    backgroundColor: "#FCFBF6",
-    gap: 6,
+    borderRadius: 14,
+    backgroundColor: colors.cardSoft,
+    gap: 8,
   },
   confirmTitle: {
     color: colors.ink,
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 16,
+    fontWeight: "800",
   },
   confirmText: {
     color: colors.ink,
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
   },
   detectedGroup: {
-    marginTop: 6,
-    padding: 8,
+    marginTop: 8,
+    padding: 10,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
-    backgroundColor: "#fff",
-    gap: 3,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    gap: 6,
   },
   detectedGroupTitle: {
     color: colors.muted,
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   detectedGroupRow: {
     color: colors.ink,
-    fontSize: 12,
+    fontSize: 13,
+    fontWeight: "600",
   },
   confirmActions: {
-    gap: 8,
-    marginTop: 4,
+    gap: 10,
+    marginTop: 6,
   },
   materialList: {
-    marginTop: 10,
-    gap: 4,
+    marginTop: 12,
+    gap: 8,
   },
   sourceTag: {
     color: colors.muted,
-    marginBottom: 4,
-    fontSize: 11,
-    fontWeight: "600",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.3,
   },
   materialRow: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
+    backgroundColor: colors.surface,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  materialName: {
     color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+    flex: 1,
+    marginRight: 8,
+  },
+  materialWeight: {
+    color: colors.primary,
     fontSize: 13,
+    fontWeight: "800",
   },
   horizontalList: {
-    marginBottom: 8,
+    marginBottom: 10,
   },
   chip: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 20,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 11,
     marginRight: 8,
-    backgroundColor: "#fff",
+    backgroundColor: colors.cardSoft,
   },
   chipActive: {
     borderColor: colors.primary,
-    backgroundColor: "#EAF8F3",
+    backgroundColor: "rgba(0, 232, 122, 0.12)",
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 4,
   },
-  chipText: { color: colors.ink, fontSize: 12 },
-  chipTextActive: { color: colors.primary, fontSize: 12, fontWeight: "700" },
+  chipText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  chipTextActive: {
+    color: colors.primary,
+    fontSize: 12,
+    fontWeight: "800",
+  },
   inlineInputs: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 10,
   },
   inlineInput: {
     flex: 1,
     marginBottom: 0,
   },
+  addIconButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(0, 232, 122, 0.45)",
+    backgroundColor: colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 14,
+    elevation: 6,
+  },
+  addIconText: {
+    color: colors.primaryDark,
+    fontSize: 32,
+    lineHeight: 32,
+    fontWeight: "800",
+    marginTop: -2,
+  },
   manualRow: {
-    marginTop: 8,
-    paddingTop: 8,
+    marginTop: 10,
+    paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: colors.border,
     flexDirection: "row",
@@ -1222,25 +1300,52 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   manualText: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
     flex: 1,
     marginRight: 8,
-    color: colors.ink,
-    fontSize: 13,
   },
   manualLbsInput: {
-    width: 64,
-    marginRight: 6,
+    width: 72,
+    marginRight: 8,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 8,
+    borderRadius: 10,
     paddingHorizontal: 8,
-    paddingVertical: 6,
-    backgroundColor: "#fff",
-    fontSize: 12,
-  },
-  message: {
-    marginBottom: 8,
+    paddingVertical: 7,
+    backgroundColor: colors.cardSoft,
     color: colors.ink,
     fontSize: 13,
+    fontWeight: "700",
+  },
+  binButton: {
+    width: 46,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 107, 107, 0.5)",
+    backgroundColor: "rgba(255, 107, 107, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  binButtonText: {
+    fontSize: 18,
+    color: colors.danger,
+  },
+  messageBar: {
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.cardSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  message: {
+    color: colors.ink,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
   },
 });
