@@ -52,6 +52,9 @@ npm start
 
 For full sponsor integrations, copy `.env.example` to `.env` and add keys.
 
+For permanent mobile reliability (no LAN/tunnel dependency), deploy backend to a managed host and point mobile to production API:
+- See [Production Deployment](/Users/paarthtangirala/Documents/Documents-MacBookAir/GitHub/SCU%20hack/recyclerun-team/docs/PRODUCTION_DEPLOYMENT.md).
+
 ---
 
 ## Architecture

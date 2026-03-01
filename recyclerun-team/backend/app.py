@@ -1,6 +1,7 @@
 """
 RecycleRun Flask application entry point.
 """
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,5 +26,8 @@ def create_app():
 
 if __name__ == "__main__":
     app = create_app()
-    print("♻️  RecycleRun backend — http://localhost:5000")
-    app.run(debug=True, port=5000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "5050"))
+    debug = os.getenv("FLASK_DEBUG", "0") == "1"
+    print(f"♻️  RecycleRun backend — http://{host}:{port}")
+    app.run(host=host, port=port, debug=debug)

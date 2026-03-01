@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: recyclerun-api
+    runtime: python
+    rootDir: recyclerun-team
+    autoDeploy: true
+    buildCommand: pip install --no-cache-dir -r backend/requirements.txt
+    startCommand: gunicorn --workers=2 --threads=4 --timeout=120 --bind 0.0.0.0:$PORT backend.wsgi:app
+    healthCheckPath: /api/health
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PORT
+        sync: false
+      - key: AMD_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: ENABLE_CLAUDE_FALLBACK
+        value: "0"

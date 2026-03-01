@@ -52,7 +52,19 @@ This:
 1. Detects LAN IP.
 2. Writes `mobile/.env`.
 3. Starts Expo in LAN mode with cache clear.
-## 5) Smoke Checklist (2 min)
+
+## 5) Production API Profile (Permanent)
+
+If local network routing is unreliable, switch mobile to a stable hosted API:
+
+```bash
+cd recyclerun-team
+./scripts/mobile/use-prod-api.sh https://<your-hosted-api-domain>/api
+cd mobile
+npm start
+```
+
+## 6) Smoke Checklist (2 min)
 
 1. Open **Home** tab:
    - API status shows `ok`.
@@ -67,7 +79,7 @@ This:
 5. Open **Rates** tab:
    - Material rates list loads.
 
-## 6) Common Fixes
+## 7) Common Fixes
 
 - `Network request failed` in app:
   - Verify phone and laptop are on same Wi-Fi.
