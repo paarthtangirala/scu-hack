@@ -212,3 +212,82 @@ def validate_accept_route_payload(data: Any) -> Tuple[Dict[str, Any] | None, Lis
         return None, errors
 
     return {"driver_name": driver_name, "stops": stops}, []
+
+
+def validate_live_session_start_payload(data: Any) -> Tuple[Dict[str, Any] | None, List[Dict[str, str]]]:
+    errors: List[Dict[str, str]] = []
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None, [{"field": "body", "message": "JSON object is required"}]
+
+    model = _as_string(data.get("model"))
+    if data.get("model") is not None and not model:
+        errors.append({"field": "model", "message": "model must be a non-empty string"})
+
+    force_demo_raw = data.get("force_demo", False)
+    if isinstance(force_demo_raw, bool):
+        force_demo = force_demo_raw
+    elif isinstance(force_demo_raw, str):
+        force_demo = force_demo_raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        errors.append({"field": "force_demo", "message": "force_demo must be a boolean"})
+        force_demo = False
+
+    if errors:
+        return None, errors
+
+    return {"model": model or None, "force_demo": force_demo}, []
+
+
+def validate_live_frame_payload(
+    data: Any,
+    *,
+    max_bytes: int,
+    allowed_mime_types: list[str],
+) -> Tuple[Dict[str, Any] | None, List[Dict[str, str]]]:
+    errors: List[Dict[str, str]] = []
+    if not isinstance(data, dict):
+        return None, [{"field": "body", "message": "JSON object is required"}]
+
+    raw_frame = _as_string(data.get("frame_base64"))
+    if not raw_frame:
+        return None, [{"field": "frame_base64", "message": "frame_base64 is required"}]
+
+    mime_type = _as_string(data.get("mime_type")).lower() or "image/jpeg"
+    if "," in raw_frame:
+        prefix, frame_only = raw_frame.split(",", 1)
+        raw_frame = frame_only.strip()
+        if prefix.startswith("data:") and ";base64" in prefix and not _as_string(data.get("mime_type")):
+            inferred = prefix[5:].split(";", 1)[0].strip().lower()
+            if inferred:
+                mime_type = inferred
+
+    if mime_type not in set(allowed_mime_types):
+        errors.append(
+            {
+                "field": "mime_type",
+                "message": f"Unsupported mime_type. Must be one of: {', '.join(sorted(set(allowed_mime_types)))}",
+            }
+        )
+
+    frame_seq = data.get("frame_seq")
+    parsed_seq: int | None = None
+    if frame_seq is not None:
+        parsed_seq = _parse_int(frame_seq, "frame_seq", errors)
+        if parsed_seq is not None and parsed_seq < 0:
+            errors.append({"field": "frame_seq", "message": "Must be >= 0"})
+
+    try:
+        decoded = base64.b64decode(raw_frame, validate=True)
+    except (binascii.Error, ValueError):
+        errors.append({"field": "frame_base64", "message": "Invalid base64 encoding"})
+        decoded = b""
+
+    if decoded and len(decoded) > max_bytes:
+        errors.append({"field": "frame_base64", "message": f"Frame exceeds {max_bytes} bytes"})
+
+    if errors:
+        return None, errors
+
+    return {"frame_base64": raw_frame, "mime_type": mime_type, "frame_seq": parsed_seq}, []

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyAiAutofill,
   buildListingPayload,
   mergeMaterials,
   normalizeLbs,
@@ -121,5 +122,40 @@ describe('upload pipeline hardening', () => {
     });
     expect(payload.materials[0].lbs).toBe(payload.materials[0].weight_lbs);
   });
-});
 
+  it('applies AI autofill while respecting locked manual override types', () => {
+    const aiRows = [
+      { type: 'cardboard', lbs: 2.0 },
+      { type: 'aluminum_cans', lbs: 1.5 },
+      { type: 'cardboard', lbs: 1.0 },
+    ];
+    const next = applyAiAutofill(aiRows, ['cardboard']);
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({ type: 'aluminum_cans', weight_lbs: 1.5 });
+  });
+
+  it('manual lock prevents AI overwrite in merged payload rows', () => {
+    const merged = mergeMaterials(
+      [{ type: 'cardboard', lbs: 4.0 }, { type: 'aluminum_cans', lbs: 1.0 }],
+      [{ type: 'cardboard', lbs: 2.5 }],
+      undefined,
+      ['cardboard']
+    );
+
+    const byType = Object.fromEntries(merged.map((m) => [m.type, m]));
+    expect(byType.cardboard.weight_lbs).toBe(2.5);
+    expect(byType.aluminum_cans.weight_lbs).toBe(1.0);
+  });
+
+  it('AI autofill is stable for repeated identical suggestions', () => {
+    const aiRows = [
+      { type: 'plastic_pet', lbs: 1.4 },
+      { type: 'plastic_pet', lbs: 0.6 },
+    ];
+
+    const first = applyAiAutofill(aiRows, []);
+    const second = applyAiAutofill(aiRows, []);
+    expect(first).toEqual(second);
+  });
+});

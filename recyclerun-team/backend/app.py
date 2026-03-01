@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask
 from flask_cors import CORS
-from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp
+from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp, live_vision_bp
 
 def create_app():
     # Load .env from repo root by default so API keys work in hackathon demos.
@@ -22,6 +22,7 @@ def create_app():
     app.register_blueprint(classify_bp)
     app.register_blueprint(optimize_bp)
     app.register_blueprint(impact_bp)
+    app.register_blueprint(live_vision_bp)
     return app
 
 if __name__ == "__main__":

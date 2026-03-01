@@ -55,6 +55,21 @@ export const api = {
   classifyImage: (base64) =>
     request('/classify', { method: 'POST', body: JSON.stringify({ image_base64: base64 }) }),
 
+  startLiveVisionSession: (payload = {}) =>
+    request('/live-vision/session/start', { method: 'POST', body: JSON.stringify(payload) }),
+
+  sendLiveVisionFrame: (sessionId, payload) =>
+    request(`/live-vision/session/${sessionId}/frame`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  stopLiveVisionSession: (sessionId) =>
+    request(`/live-vision/session/${sessionId}/stop`, { method: 'POST', body: JSON.stringify({}) }),
+
+  getLiveVisionSessionHealth: (sessionId) =>
+    request(`/live-vision/session/${sessionId}/health`),
+
   // Route
   optimizeRoute: ({ lat, lng, maxMinutes, truckCapacity, objective }) =>
     request('/optimize-route', {
