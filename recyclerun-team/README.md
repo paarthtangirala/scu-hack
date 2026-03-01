@@ -43,11 +43,12 @@ npm run dev
 # → http://localhost:5173
 
 # Terminal 3 — Mobile (Expo Go)
-cd mobile
+cd recyclerun-team/mobile
 npm install
-../scripts/mobile/start-expo-lan.sh
+npm start
 # Scan QR in Expo Go
 ```
+`npm start` uses Expo tunnel for app bundle delivery (stable on restrictive Wi-Fi), with LAN API auto-config (`http://<LAN_IP>:5050/api`) handled by `prestart`.
 
 For full sponsor integrations, copy `.env.example` to `.env` and add keys.
 

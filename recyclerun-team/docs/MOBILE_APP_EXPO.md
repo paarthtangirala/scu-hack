@@ -35,10 +35,11 @@ This auto-detects your laptop LAN IP and writes `mobile/.env` with:
 ```bash
 cd recyclerun-team/mobile
 npm install
-npm run start:lan
+npm start
 ```
 
 Scan the QR code from Expo CLI with Expo Go.
+`npm start` now uses Expo tunnel for bundle delivery (more robust on restrictive Wi-Fi), while API still uses LAN (`<YOUR_LAN_IP>:5050`) from `mobile/.env`.
 
 ## 4) One-Command Mobile Setup (Recommended)
 
@@ -76,6 +77,10 @@ This:
 - `HTTP 503 Tunnel Unavailable`:
   - You are still pointing to `*.loca.lt`.
   - Switch to LAN mode (`npm run start:lan`) and regenerate `mobile/.env` via `./scripts/mobile/use-lan-api.sh`.
+- Expo Go stuck at `Opening project...`:
+  - This usually means Expo LAN bundle transport is blocked on your network.
+  - Use `npm start` (`--tunnel`) for bundle transport.
+  - On iOS, ensure Expo Go has Local Network permission and disable VPN/private relay during local debugging.
 - Backend on macOS blocked:
   - Allow Python incoming connections in macOS firewall prompt.
 - Stale demo data:
