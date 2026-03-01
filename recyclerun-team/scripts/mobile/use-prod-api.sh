@@ -15,6 +15,11 @@ if [[ ! "${API_BASE_URL}" =~ ^https:// ]]; then
   exit 1
 fi
 
+# Normalize to expected backend prefix so mobile routes resolve correctly.
+if [[ "${API_BASE_URL}" != */api ]]; then
+  API_BASE_URL="${API_BASE_URL}/api"
+fi
+
 cat > "${MOBILE_ENV_FILE}" <<EOF
 EXPO_PUBLIC_API_BASE_URL=${API_BASE_URL}
 EXPO_PUBLIC_API_PORT=5050
@@ -24,4 +29,3 @@ EOF
 echo "Wrote ${MOBILE_ENV_FILE}"
 echo "API base set to production URL: ${API_BASE_URL}"
 echo "AUTO_LAN disabled for production profile."
-
