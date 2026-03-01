@@ -20,6 +20,14 @@ function normalizeKind(kind) {
   return kind === 'business' ? 'business' : 'household';
 }
 
+function normalizeStatus(status) {
+  const value = String(status || 'available').trim().toLowerCase();
+  if (value === 'available' || value === 'claimed' || value === 'completed') {
+    return value;
+  }
+  return 'available';
+}
+
 function normalizeStop(stop, index) {
   const lat = toNumber(stop?.lat);
   const lng = toNumber(stop?.lng);
@@ -41,7 +49,7 @@ function normalizeStop(stop, index) {
 
 export function buildListingMarkers(listings = []) {
   return (Array.isArray(listings) ? listings : [])
-    .filter((listing) => (listing?.status || 'available') === 'available')
+    .filter((listing) => normalizeStatus(listing?.status) === 'available')
     .map((listing, index) => {
       const lat = toNumber(listing?.lat);
       const lng = toNumber(listing?.lng);
@@ -123,12 +131,29 @@ export async function resolveOptimizedRoute({
   listings = [],
   fallbackListings = [],
 }) {
+  const fallbackPool = Array.isArray(listings) && listings.length ? listings : fallbackListings;
   const response = await api.optimizeRoute({ lat, lng, maxMinutes, truckCapacity, objective });
+
   if (response?.ok && Array.isArray(response?.data?.stops)) {
+    if (response.data.stops.length > 0 || !Array.isArray(fallbackPool) || fallbackPool.length === 0) {
+      return { route: response.data, source: 'backend' };
+    }
+
+    const fallbackRoute = optimizeRoute({
+      driverLat: lat,
+      driverLng: lng,
+      listings: fallbackPool,
+      maxMinutes,
+      truckCapacityLbs: truckCapacity,
+      objective,
+    });
+    if (Array.isArray(fallbackRoute?.stops) && fallbackRoute.stops.length > 0) {
+      return { route: fallbackRoute, source: 'fallback' };
+    }
+
     return { route: response.data, source: 'backend' };
   }
 
-  const fallbackPool = Array.isArray(listings) && listings.length ? listings : fallbackListings;
   const route = optimizeRoute({
     driverLat: lat,
     driverLng: lng,
@@ -139,4 +164,3 @@ export async function resolveOptimizedRoute({
   });
   return { route, source: 'fallback' };
 }
-

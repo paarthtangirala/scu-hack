@@ -1,5 +1,5 @@
 /** Owner: Anisha */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RouteBanner } from '../components/driver/RouteBanner';
 import { StopCard } from '../components/driver/StopCard';
 import { TruckMeter } from '../components/driver/TruckMeter';
@@ -30,6 +30,7 @@ import {
 
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 380;
+const GEOLOCATION_TIMEOUT_MS = 8000;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -58,6 +59,67 @@ function projectToCanvas(point, center, viewport) {
   };
 }
 
+function mapGeolocationErrorReason(code) {
+  if (code === 1) return 'permission_denied';
+  if (code === 2) return 'position_unavailable';
+  if (code === 3) return 'timeout';
+  return 'unknown';
+}
+
+async function getCurrentDriverLocation() {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    return {
+      ok: false,
+      source: 'demo',
+      lat: DEFAULT_DRIVER_CENTER.lat,
+      lng: DEFAULT_DRIVER_CENTER.lng,
+      reason: 'unsupported',
+      message: 'Geolocation not available. Using demo hub location.',
+    };
+  }
+
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = Number(position?.coords?.latitude);
+        const lng = Number(position?.coords?.longitude);
+        const accuracyMeters = Number(position?.coords?.accuracy ?? 0);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          resolve({
+            ok: false,
+            source: 'demo',
+            lat: DEFAULT_DRIVER_CENTER.lat,
+            lng: DEFAULT_DRIVER_CENTER.lng,
+            reason: 'invalid_coordinates',
+            message: 'Device location was invalid. Using demo hub location.',
+          });
+          return;
+        }
+        resolve({
+          ok: true,
+          source: 'live',
+          lat,
+          lng,
+          accuracyMeters: Number.isFinite(accuracyMeters) ? accuracyMeters : null,
+          reason: null,
+          message: '',
+        });
+      },
+      (error) => {
+        resolve({
+          ok: false,
+          source: 'demo',
+          lat: DEFAULT_DRIVER_CENTER.lat,
+          lng: DEFAULT_DRIVER_CENTER.lng,
+          reason: mapGeolocationErrorReason(error?.code),
+          message: error?.message || 'Unable to get current location. Using demo hub location.',
+        });
+      },
+      { enableHighAccuracy: true, timeout: GEOLOCATION_TIMEOUT_MS, maximumAge: 120000 }
+    );
+  });
+}
+
 export function DriverPage({ onToast }) {
   const { listings, refresh } = useListings();
   const { route, loading, accepted, notifications, acceptSummary, build, accept, reset } = useRoute(listings);
@@ -73,6 +135,9 @@ export function DriverPage({ onToast }) {
   const [impactSnapshot, setImpactSnapshot] = useState(null);
   const [showNotif, setShowNotif] = useState(false);
   const [selectedStopIndex, setSelectedStopIndex] = useState(null);
+  const [driverLocation, setDriverLocation] = useState(DEFAULT_DRIVER_CENTER);
+  const [locationSource, setLocationSource] = useState('demo');
+  const [locationStatusText, setLocationStatusText] = useState('Using demo hub location');
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window !== 'undefined' ? window.innerWidth : 1280
   ));
@@ -107,14 +172,83 @@ export function DriverPage({ onToast }) {
     onToast?.(message);
   }
 
+  const refreshDriverLocation = useCallback(async () => {
+    if (mountedRef.current) {
+      setLocationStatusText('Locating driver position...');
+    }
+
+    const result = await runSafeAsync(
+      () => getCurrentDriverLocation(),
+      {
+        ok: false,
+        source: 'demo',
+        lat: DEFAULT_DRIVER_CENTER.lat,
+        lng: DEFAULT_DRIVER_CENTER.lng,
+        reason: 'exception',
+        message: 'Unable to detect location. Using demo hub location.',
+      }
+    );
+
+    if (!mountedRef.current) {
+      return result;
+    }
+
+    const lat = safeNumber(result?.lat, DEFAULT_DRIVER_CENTER.lat);
+    const lng = safeNumber(result?.lng, DEFAULT_DRIVER_CENTER.lng);
+    setDriverLocation({ lat, lng });
+    if (result?.ok) {
+      setLocationSource('live');
+      const accuracy = Number.isFinite(result?.accuracyMeters) ? ` (±${Math.round(result.accuracyMeters)}m)` : '';
+      setLocationStatusText(`Live location locked${accuracy}`);
+    } else {
+      setLocationSource('demo');
+      setLocationStatusText(result?.message || 'Using demo hub location');
+    }
+    return result;
+  }, []);
+
   async function handleBuild() {
+    const anchor = {
+      lat: safeNumber(driverLocation?.lat, DEFAULT_DRIVER_CENTER.lat),
+      lng: safeNumber(driverLocation?.lng, DEFAULT_DRIVER_CENTER.lng),
+    };
     const response = await runSafeAsync(
-      () => build({ lat: 37.3541, lng: -121.9552, maxMinutes: maxMin, truckCapacity: capacity, objective }),
+      () => build({ lat: anchor.lat, lng: anchor.lng, maxMinutes: maxMin, truckCapacity: capacity, objective }),
       { route: null, source: 'error' }
     );
 
+    const stopCount = Array.isArray(response?.route?.stops) ? response.route.stops.length : 0;
+    const isOffDemoCenter =
+      Math.abs(anchor.lat - DEFAULT_DRIVER_CENTER.lat) > 0.0001 ||
+      Math.abs(anchor.lng - DEFAULT_DRIVER_CENTER.lng) > 0.0001;
+
+    if (stopCount === 0 && isOffDemoCenter) {
+      const fallbackResponse = await runSafeAsync(
+        () => build({
+          lat: DEFAULT_DRIVER_CENTER.lat,
+          lng: DEFAULT_DRIVER_CENTER.lng,
+          maxMinutes: maxMin,
+          truckCapacity: capacity,
+          objective,
+        }),
+        { route: null, source: 'error' }
+      );
+      const fallbackStopCount = Array.isArray(fallbackResponse?.route?.stops) ? fallbackResponse.route.stops.length : 0;
+      if (fallbackStopCount > 0) {
+        if (mountedRef.current) {
+          setDriverLocation(DEFAULT_DRIVER_CENTER);
+          setLocationSource('demo');
+          setLocationStatusText('No feasible local stops. Switched to demo hub location.');
+        }
+        pushToast('ℹ️ No feasible stops near your GPS location. Route built from demo hub.');
+        return;
+      }
+    }
+
     if (!response?.route) {
       pushToast('⚠️ Unable to build route. Please retry.');
+    } else if (stopCount === 0) {
+      pushToast('⚠️ No feasible stops found. Increase max drive time or truck capacity.');
     }
   }
 
@@ -253,9 +387,9 @@ export function DriverPage({ onToast }) {
       listings: displayListings,
       route: safeRoute,
       selectedStopIndex,
-      fallbackCenter: DEFAULT_DRIVER_CENTER,
+      fallbackCenter: driverLocation,
     }),
-    [displayListings, safeRoute, selectedStopIndex]
+    [displayListings, safeRoute, selectedStopIndex, driverLocation]
   );
   const mapPoints = useMemo(
     () => [...mapModel.listingMarkers, ...mapModel.stopMarkers],
@@ -290,6 +424,10 @@ export function DriverPage({ onToast }) {
   useEffect(() => {
     void runSafeAsync(() => refreshImpactSnapshot(), null);
   }, []);
+
+  useEffect(() => {
+    void refreshDriverLocation();
+  }, [refreshDriverLocation]);
 
   useEffect(() => {
     if (!safeRoute?.stops?.length) {
@@ -329,6 +467,24 @@ export function DriverPage({ onToast }) {
           <select value={capacity} onChange={e => setCapacity(+e.target.value)}>
             <option value={500}>0.5 ton</option><option value={1000}>1 ton</option><option value={2000}>2 ton</option>
           </select></div>
+        <div className="control-card"><div className="control-label">DRIVER LOCATION</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.3rem' }}>
+            mode: {locationSource === 'live' ? 'live-gps' : 'demo-hub'}
+          </div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: '0.75rem', color: 'var(--muted)', marginBottom: '0.45rem' }}>
+            {driverLocation.lat.toFixed(5)}, {driverLocation.lng.toFixed(5)}
+          </div>
+          <button
+            className="btn btn-secondary"
+            type="button"
+            onClick={() => { void refreshDriverLocation(); }}
+            disabled={loading}
+            style={{ width: '100%', marginBottom: '0.45rem' }}
+          >
+            Use Current Location
+          </button>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--muted)' }}>{locationStatusText}</div>
+        </div>
       </div>
 
       <button className="btn btn-primary btn-lg btn-full" onClick={handleBuild} disabled={loading}

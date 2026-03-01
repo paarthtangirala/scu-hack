@@ -18,7 +18,7 @@ vi.mock('./api', () => ({
 const SAMPLE_LISTINGS = [
   {
     id: 'h1',
-    status: 'available',
+    status: 'AVAILABLE',
     listing_kind: 'household',
     household_name: 'Home One',
     address: '1 A St',
@@ -56,6 +56,23 @@ describe('map pipeline', () => {
     expect(markers).toHaveLength(2);
     expect(markers[0].iconType).toBe('household');
     expect(markers[1].iconType).toBe('business');
+  });
+
+  it('status filtering is case-insensitive for available listings', () => {
+    const markers = buildListingMarkers([
+      ...SAMPLE_LISTINGS,
+      {
+        id: 'c1',
+        status: 'Claimed',
+        listing_kind: 'household',
+        household_name: 'Claimed One',
+        address: '3 C St',
+        lat: 37.36,
+        lng: -121.95,
+      },
+    ]);
+
+    expect(markers.map((marker) => marker.id)).toEqual(['h1', 'b1']);
   });
 
   it('route polyline: ordered stop coordinates produce correct sequence', () => {
@@ -97,6 +114,38 @@ describe('map pipeline', () => {
     expect(Array.isArray(model.polyline)).toBe(true);
   });
 
+  it('backend empty route falls back to client optimizer when listings are available', async () => {
+    api.optimizeRoute.mockResolvedValue({
+      ok: true,
+      data: {
+        stops: [],
+        summary: {
+          total_stops: 0,
+          total_value: 0,
+          total_lbs: 0,
+          total_miles: 0,
+          estimated_minutes: 0,
+          lbs_per_hour: 0,
+          objective: 'lbs',
+        },
+      },
+    });
+
+    const { route, source } = await resolveOptimizedRoute({
+      lat: 37.3541,
+      lng: -121.9552,
+      maxMinutes: 120,
+      truckCapacity: 1000,
+      objective: 'lbs',
+      listings: SAMPLE_LISTINGS,
+      fallbackListings: [],
+    });
+
+    expect(source).toBe('fallback');
+    expect(Array.isArray(route?.stops)).toBe(true);
+    expect(route.stops.length).toBeGreaterThan(0);
+  });
+
   it('no desync: list order and map marker order always match same index', () => {
     const stopMarkers = buildRouteStopMarkers(SAMPLE_STOPS);
     expect(stopMarkers).toHaveLength(SAMPLE_STOPS.length);
@@ -119,4 +168,3 @@ describe('map pipeline', () => {
     expect(model.selectedStopIndex).toBeNull();
   });
 });
-

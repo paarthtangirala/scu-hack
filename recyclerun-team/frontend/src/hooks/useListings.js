@@ -26,16 +26,34 @@ export function useListings() {
       { ok: false, status: 0, error: 'Unable to load listings' }
     );
 
-    const nextListings = response?.ok && Array.isArray(response?.data?.listings)
+    let apiListings = response?.ok && Array.isArray(response?.data?.listings)
       ? normalizeListingsForRender(response.data.listings)
-      : normalizeListingsForRender(DEMO_LISTINGS);
+      : [];
+    let finalResponse = response;
+
+    if (response?.ok && apiListings.length === 0) {
+      await runSafeAsync(() => api.resetDemo(), null);
+      const refreshed = await runSafeAsync(
+        () => api.getListings(),
+        { ok: false, status: 0, error: 'Unable to reload demo listings' }
+      );
+      if (refreshed?.ok && Array.isArray(refreshed?.data?.listings)) {
+        const resetListings = normalizeListingsForRender(refreshed.data.listings);
+        if (resetListings.length > 0) {
+          apiListings = resetListings;
+          finalResponse = refreshed;
+        }
+      }
+    }
+
+    const nextListings = apiListings.length ? apiListings : normalizeListingsForRender(DEMO_LISTINGS);
 
     if (mountedRef.current) {
       setListings(nextListings);
       setLoading(false);
     }
 
-    return response;
+    return finalResponse;
   };
 
   useEffect(() => {

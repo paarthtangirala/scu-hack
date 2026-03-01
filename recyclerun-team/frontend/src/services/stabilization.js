@@ -115,12 +115,16 @@ export function normalizeListingsForRender(listings) {
     const listingKind = safeString(listing?.listing_kind, 'household').toLowerCase() === 'business'
       ? 'business'
       : 'household';
+    const normalizedStatus = safeString(listing?.status, 'available').toLowerCase();
+    const status = ['available', 'claimed', 'completed'].includes(normalizedStatus)
+      ? normalizedStatus
+      : 'available';
     return {
       id: listingId,
       listing_kind: listingKind,
       household_name: safeString(listing?.household_name, 'Unnamed listing'),
       address: safeString(listing?.address, 'Address unavailable'),
-      status: safeString(listing?.status, 'available'),
+      status,
       lat: safeNumber(listing?.lat, 0),
       lng: safeNumber(listing?.lng, 0),
       phone: safeString(listing?.phone, ''),
