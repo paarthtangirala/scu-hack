@@ -5,7 +5,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:route-edge-cases": "vitest run src/services/__tests__/routeEdgeCaseParity.test.js"
   },
   "dependencies": {
     "react": "^18.2.0",

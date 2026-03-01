@@ -15,9 +15,9 @@ export function useRoute(listings) {
 
   const build = async ({ lat, lng, maxMinutes, truckCapacity, objective }) => {
     setLoading(true);
-    const data = await api.optimizeRoute({ lat, lng, maxMinutes, truckCapacity, objective });
-    if (data?.stops) {
-      setRoute(data);
+    const response = await api.optimizeRoute({ lat, lng, maxMinutes, truckCapacity, objective });
+    if (response?.ok && response?.data?.stops) {
+      setRoute(response.data);
     } else {
       // client-side fallback
       setRoute(optimizeRoute({ driverLat: lat, driverLng: lng,
@@ -30,8 +30,8 @@ export function useRoute(listings) {
   const accept = async (driverName) => {
     if (!route) return;
     setLoading(true);
-    const data = await api.acceptRoute({ stops: route.stops, driverName });
-    setNotifications(data?.notifications || route.stops.map((s, i) => ({
+    const response = await api.acceptRoute({ stops: route.stops, driverName });
+    setNotifications((response?.ok ? response?.data?.notifications : null) || route.stops.map((s, i) => ({
       household: s.household_name, eta_minutes: s.eta_minutes,
       notification: { mode: 'demo', message: `${driverName} arriving in ${s.eta_minutes} min` }
     })));

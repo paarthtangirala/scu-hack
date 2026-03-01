@@ -12,8 +12,13 @@ export function useListings() {
 
   const refresh = async () => {
     setLoading(true);
-    const data = await api.getListings();
-    if (data?.listings) setListings(data.listings);
+    const response = await api.getListings();
+    if (response?.ok && Array.isArray(response?.data?.listings)) {
+      setListings(response.data.listings);
+    } else {
+      // Keep driver view usable when backend is down.
+      setListings(DEMO_LISTINGS);
+    }
     setLoading(false);
   };
 
