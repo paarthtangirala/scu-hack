@@ -258,3 +258,33 @@ def test_notify_with_retry_omits_retry_attempt_on_first_try_success(monkeypatch)
     assert result["mode"] == "live"
     assert "retry_attempt" not in result
     assert attempts_used == 1
+
+
+def test_notify_with_retry_final_failure_is_deterministic_and_contract_stable(monkeypatch):
+    attempts = {"count": 0}
+
+    def _always_fail(**kwargs):
+        attempts["count"] += 1
+        return {
+            "success": False,
+            "mode": "failed",
+            "error": "timed out",
+            "reason": "twilio_timeout",
+        }
+
+    monkeypatch.setattr(optimize_route_module.notifier, "notify", _always_fail)
+
+    result, attempts_used = optimize_route_module._notify_with_retry(
+        phone="+14085550101",
+        household_name="Household",
+        eta_minutes=8,
+        driver_name="Driver",
+        attempts=2,
+    )
+
+    assert attempts["count"] == 2
+    assert attempts_used == 2
+    assert result["success"] is False
+    assert result["mode"] == "failed"
+    assert result["reason"] == "twilio_timeout"
+    assert "retry_attempt" not in result

@@ -1,0 +1,248 @@
+{
+  "metadata": {
+    "timestamp_utc": "2026-03-01T08:33:42.900542+00:00",
+    "commit": "1c5ab2b535bb3ead98e46d914644645fa437e7ba",
+    "runs": 8,
+    "warmup": 2,
+    "seed": 20260301,
+    "stress_multipliers": [
+      5,
+      10
+    ],
+    "objectives": [
+      "value",
+      "lbs"
+    ],
+    "force_fallback_only": false
+  },
+  "scenarios": [
+    {
+      "scenario_name": "m1_value_normal",
+      "dataset_multiplier": 1,
+      "dataset_size": 20,
+      "objective": "value",
+      "solver_mode": "normal",
+      "observed_solvers": [
+        "ortools"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 2002.473,
+        "p50_ms": 2002.3,
+        "p95_ms": 2003.377,
+        "p99_ms": 2003.628,
+        "max_ms": 2003.691,
+        "stddev_ms": 0.555
+      }
+    },
+    {
+      "scenario_name": "m1_value_forced_fallback",
+      "dataset_multiplier": 1,
+      "dataset_size": 20,
+      "objective": "value",
+      "solver_mode": "forced_fallback",
+      "observed_solvers": [
+        "greedy_fallback"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 0.566,
+        "p50_ms": 0.564,
+        "p95_ms": 0.585,
+        "p99_ms": 0.589,
+        "max_ms": 0.59,
+        "stddev_ms": 0.012
+      }
+    },
+    {
+      "scenario_name": "m1_lbs_normal",
+      "dataset_multiplier": 1,
+      "dataset_size": 20,
+      "objective": "lbs",
+      "solver_mode": "normal",
+      "observed_solvers": [
+        "ortools"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 2003.089,
+        "p50_ms": 2002.583,
+        "p95_ms": 2005.212,
+        "p99_ms": 2005.526,
+        "max_ms": 2005.605,
+        "stddev_ms": 1.181
+      }
+    },
+    {
+      "scenario_name": "m1_lbs_forced_fallback",
+      "dataset_multiplier": 1,
+      "dataset_size": 20,
+      "objective": "lbs",
+      "solver_mode": "forced_fallback",
+      "observed_solvers": [
+        "greedy_fallback"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 0.326,
+        "p50_ms": 0.323,
+        "p95_ms": 0.337,
+        "p99_ms": 0.338,
+        "max_ms": 0.338,
+        "stddev_ms": 0.007
+      }
+    },
+    {
+      "scenario_name": "m5_value_normal",
+      "dataset_multiplier": 5,
+      "dataset_size": 100,
+      "objective": "value",
+      "solver_mode": "normal",
+      "observed_solvers": [
+        "ortools"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 2012.895,
+        "p50_ms": 2009.707,
+        "p95_ms": 2024.294,
+        "p99_ms": 2026.626,
+        "max_ms": 2027.209,
+        "stddev_ms": 6.227
+      }
+    },
+    {
+      "scenario_name": "m5_value_forced_fallback",
+      "dataset_multiplier": 5,
+      "dataset_size": 100,
+      "objective": "value",
+      "solver_mode": "forced_fallback",
+      "observed_solvers": [
+        "greedy_fallback"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 3.272,
+        "p50_ms": 3.197,
+        "p95_ms": 3.452,
+        "p99_ms": 3.455,
+        "max_ms": 3.456,
+        "stddev_ms": 0.139
+      }
+    },
+    {
+      "scenario_name": "m5_lbs_normal",
+      "dataset_multiplier": 5,
+      "dataset_size": 100,
+      "objective": "lbs",
+      "solver_mode": "normal",
+      "observed_solvers": [
+        "ortools"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 2009.72,
+        "p50_ms": 2009.12,
+        "p95_ms": 2011.505,
+        "p99_ms": 2011.59,
+        "max_ms": 2011.611,
+        "stddev_ms": 1.031
+      }
+    },
+    {
+      "scenario_name": "m5_lbs_forced_fallback",
+      "dataset_multiplier": 5,
+      "dataset_size": 100,
+      "objective": "lbs",
+      "solver_mode": "forced_fallback",
+      "observed_solvers": [
+        "greedy_fallback"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 0.862,
+        "p50_ms": 0.822,
+        "p95_ms": 1.212,
+        "p99_ms": 1.333,
+        "max_ms": 1.363,
+        "stddev_ms": 0.214
+      }
+    },
+    {
+      "scenario_name": "m10_value_normal",
+      "dataset_multiplier": 10,
+      "dataset_size": 200,
+      "objective": "value",
+      "solver_mode": "normal",
+      "observed_solvers": [
+        "ortools"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 2032.58,
+        "p50_ms": 2031.69,
+        "p95_ms": 2038.854,
+        "p99_ms": 2039.161,
+        "max_ms": 2039.238,
+        "stddev_ms": 3.93
+      }
+    },
+    {
+      "scenario_name": "m10_value_forced_fallback",
+      "dataset_multiplier": 10,
+      "dataset_size": 200,
+      "objective": "value",
+      "solver_mode": "forced_fallback",
+      "observed_solvers": [
+        "greedy_fallback"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 6.302,
+        "p50_ms": 6.356,
+        "p95_ms": 6.634,
+        "p99_ms": 6.676,
+        "max_ms": 6.686,
+        "stddev_ms": 0.268
+      }
+    },
+    {
+      "scenario_name": "m10_lbs_normal",
+      "dataset_multiplier": 10,
+      "dataset_size": 200,
+      "objective": "lbs",
+      "solver_mode": "normal",
+      "observed_solvers": [
+        "ortools"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 2030.946,
+        "p50_ms": 2031.139,
+        "p95_ms": 2033.232,
+        "p99_ms": 2033.609,
+        "max_ms": 2033.703,
+        "stddev_ms": 1.524
+      }
+    },
+    {
+      "scenario_name": "m10_lbs_forced_fallback",
+      "dataset_multiplier": 10,
+      "dataset_size": 200,
+      "objective": "lbs",
+      "solver_mode": "forced_fallback",
+      "observed_solvers": [
+        "greedy_fallback"
+      ],
+      "metrics": {
+        "sample_count": 8,
+        "mean_ms": 1.288,
+        "p50_ms": 1.285,
+        "p95_ms": 1.336,
+        "p99_ms": 1.35,
+        "max_ms": 1.354,
+        "stddev_ms": 0.029
+      }
+    }
+  ]
+}

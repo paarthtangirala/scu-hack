@@ -2,6 +2,7 @@
 Unit tests for RouteOptimizer.
 Owner: Paarth (tests mirror the model contracts)
 """
+import logging
 from pathlib import Path
 import sys
 import pytest
@@ -121,6 +122,50 @@ def test_ortools_failure_falls_back_to_greedy(monkeypatch):
     stops, summary = opt.optimize(37.35, -121.95, [listing], 120)
     assert len(stops) == 1
     assert summary["solver"] == "greedy_fallback"
+
+
+def test_ortools_exception_emits_fallback_telemetry(monkeypatch, caplog):
+    opt = RouteOptimizer()
+    listing = make_listing("a", 37.354, -121.956)
+    monkeypatch.setattr(optimizer_module, "ORTOOLS_AVAILABLE", True)
+    monkeypatch.setattr(RouteOptimizer, "_solve_ortools", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with caplog.at_level(logging.WARNING):
+        _, summary = opt.optimize(37.35, -121.95, [listing], 120)
+
+    assert summary["solver"] == "greedy_fallback"
+    assert "optimizer_fallback" in caplog.text
+    assert "ortools_exception" in caplog.text
+    assert "exception_type" in caplog.text
+
+
+def test_forced_fallback_mode_is_deterministic_and_skips_ortools(monkeypatch):
+    opt = RouteOptimizer()
+    listings = [
+        make_listing("a", 37.351, -121.951, lbs=7.0),
+        make_listing("b", 37.352, -121.952, lbs=6.0),
+        make_listing("c", 37.353, -121.953, lbs=8.0),
+    ]
+    monkeypatch.setattr(optimizer_module, "ORTOOLS_AVAILABLE", True)
+    monkeypatch.setattr(
+        RouteOptimizer,
+        "_solve_ortools",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("forced fallback should skip OR-Tools")),
+    )
+
+    stops1, summary1 = opt.optimize(
+        37.35, -121.95, listings, 120, truck_capacity_lbs=500, objective="value", force_fallback=True
+    )
+    stops2, summary2 = opt.optimize(
+        37.35, -121.95, listings, 120, truck_capacity_lbs=500, objective="value", force_fallback=True
+    )
+
+    assert [s.listing_id for s in stops1] == [s.listing_id for s in stops2]
+    assert [s.eta_minutes for s in stops1] == [s.eta_minutes for s in stops2]
+    assert summary1["solver"] == summary2["solver"] == "greedy_fallback"
+    assert summary1["objective"] == summary2["objective"] == "value"
+    for key in ("total_stops", "total_value", "total_lbs", "total_miles", "truck_fill_pct", "estimated_minutes", "lbs_per_hour"):
+        assert summary1[key] == summary2[key]
 
 
 def test_objective_specific_first_stop_ordering_differs(monkeypatch):

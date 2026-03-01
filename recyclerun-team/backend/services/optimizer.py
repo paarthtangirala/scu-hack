@@ -3,7 +3,9 @@ Route optimization engine.
 Primary solver: OR-Tools prize-collecting VRP.
 Fallback: greedy value-per-minute heuristic.
 """
+import logging
 import math
+import os
 import time
 from typing import List, Optional
 from backend.models.listing import Listing
@@ -24,6 +26,9 @@ CAPACITY_SCALE = 10  # tenths of pounds for integer capacity constraints
 VALUE_PENALTY_MULTIPLIER = 60
 LBS_PENALTY_MULTIPLIER = 180  # converts lbs "prize" into distance-like objective scale
 MILES_TO_METERS = 1609.34
+GREEDY_TIE_EPSILON = 1e-12
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_objective(obj: Optional[str]) -> str:
@@ -44,14 +49,16 @@ class RouteOptimizer:
         max_minutes: float,
         truck_capacity_lbs: float = 1000.0,
         objective: str = "value",
+        force_fallback: bool = False,
     ) -> tuple[list[RouteStop], dict]:
         objective = _normalize_objective(objective)
+        force_fallback = force_fallback or _env_truthy("OPTIMIZER_FORCE_FALLBACK")
         available = [l for l in listings if l.status == "available"]
         if not available:
             return [], self._build_summary([], truck_capacity_lbs, solver="none", solve_time_ms=0, objective=objective)
 
         start = time.perf_counter()
-        if ORTOOLS_AVAILABLE:
+        if ORTOOLS_AVAILABLE and not force_fallback:
             try:
                 route = self._solve_ortools(
                     driver_lat=driver_lat,
@@ -63,9 +70,27 @@ class RouteOptimizer:
                 )
                 solve_time_ms = int((time.perf_counter() - start) * 1000)
                 return route, self._build_summary(route, truck_capacity_lbs, solver="ortools", solve_time_ms=solve_time_ms, objective=objective)
-            except Exception:
-                # Keep API reliable even if OR-Tools fails for any reason.
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "optimizer_fallback %s",
+                    {
+                        "event": "optimizer_fallback",
+                        "reason": "ortools_exception",
+                        "exception_type": exc.__class__.__name__,
+                        "objective": objective,
+                        "listing_count": len(available),
+                    },
+                )
+        elif force_fallback:
+            logger.info(
+                "optimizer_fallback %s",
+                {
+                    "event": "optimizer_fallback",
+                    "reason": "forced_fallback_mode",
+                    "objective": objective,
+                    "listing_count": len(available),
+                },
+            )
 
         route = self._solve_greedy(
             driver_lat=driver_lat,
@@ -249,8 +274,16 @@ class RouteOptimizer:
 
                 prize = listing.total_lbs if objective == "lbs" else listing.total_value
                 score = prize / max(total_time, 0.01)
-                if score > best_score:
+                if score > (best_score + GREEDY_TIE_EPSILON):
                     best, best_score, best_dist, best_travel = listing, score, dist, travel_min
+                    continue
+
+                # Stable tie-breakers make fallback path deterministic for repeated runs.
+                if abs(score - best_score) <= GREEDY_TIE_EPSILON and best is not None:
+                    cur_key = (round(travel_min, 9), round(dist, 9), str(listing.id))
+                    best_key = (round(best_travel, 9), round(best_dist, 9), str(best.id))
+                    if cur_key < best_key:
+                        best, best_score, best_dist, best_travel = listing, score, dist, travel_min
 
             if best is None:
                 break
@@ -315,3 +348,8 @@ class RouteOptimizer:
         dlambda = math.radians(lng2 - lng1)
         a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
         return radius_miles * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _env_truthy(name: str) -> bool:
+    raw = os.getenv(name, "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

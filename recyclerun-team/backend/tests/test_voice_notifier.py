@@ -82,6 +82,38 @@ def test_missing_twilio_env_returns_demo_schema_with_reason(monkeypatch):
     assert len(result["message"]) > 0
 
 
+def test_missing_twilio_config_demo_reason_is_deterministic(monkeypatch):
+    notifier = VoiceNotifier()
+    monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.delenv("TWILIO_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("TWILIO_PHONE_NUMBER", raising=False)
+    monkeypatch.delenv("VOICE_FORCE_DEMO", raising=False)
+
+    first = notifier.notify("+14085550101", "Household", 11, "Driver")
+    second = notifier.notify("+14085550101", "Household", 11, "Driver")
+
+    assert first["mode"] == second["mode"] == "demo"
+    assert first["reason"] == second["reason"] == "twilio_not_configured"
+    assert first["message"] == second["message"]
+
+
+def test_forced_demo_mode_reason_is_deterministic(monkeypatch):
+    notifier = VoiceNotifier()
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TWILIO_PHONE_NUMBER", "+14085550000")
+    monkeypatch.setenv("VOICE_FORCE_DEMO", "1")
+
+    first = notifier.notify("+14085550101", "Household", 9, "Driver")
+    second = notifier.notify("+14085550101", "Household", 9, "Driver")
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert first["mode"] == second["mode"] == "demo"
+    assert first["reason"] == second["reason"] == "forced_demo_mode"
+    assert first["message"] == second["message"]
+
+
 def test_twilio_exception_returns_failed_schema_with_reason_and_error(monkeypatch):
     notifier = VoiceNotifier()
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
