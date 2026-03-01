@@ -11,44 +11,46 @@ This project now includes a native mobile client in `mobile/` built with Expo.
 ## 1) Start Backend
 
 ```bash
-cd backend
-pip install -r requirements.txt
-python app.py
+cd recyclerun-team
+pip install -r backend/requirements.txt
+python -m flask --app backend.app:create_app run --host 0.0.0.0 --port 5050
 ```
 
-Backend runs on `http://localhost:5000`.
+Backend runs on `http://localhost:5050`.
 
 ## 2) Configure Mobile API URL
 
 ```bash
-cd mobile
-cp .env.example .env
+cd recyclerun-team
+./scripts/mobile/use-lan-api.sh
 ```
 
-Update `EXPO_PUBLIC_API_BASE_URL` in `.env`:
+This auto-detects your laptop LAN IP and writes `mobile/.env` with:
 
-- iOS simulator / Android emulator on same machine:
-  - `http://127.0.0.1:5000/api`
-- Physical device (Expo Go):
-  - `http://<YOUR_LAPTOP_LAN_IP>:5000/api`
-
-Example:
-
-```bash
-EXPO_PUBLIC_API_BASE_URL=http://192.168.1.42:5000/api
-```
+- `EXPO_PUBLIC_API_BASE_URL=http://<YOUR_LAN_IP>:5050/api`
 
 ## 3) Start Expo
 
 ```bash
-cd mobile
+cd recyclerun-team/mobile
 npm install
-npm start
+npm run start:lan
 ```
 
 Scan the QR code from Expo CLI with Expo Go.
 
-## 4) Smoke Checklist (2 min)
+## 4) One-Command Mobile Setup (Recommended)
+
+```bash
+cd recyclerun-team
+./scripts/mobile/start-expo-lan.sh
+```
+
+This:
+1. Detects LAN IP.
+2. Writes `mobile/.env`.
+3. Starts Expo in LAN mode with cache clear.
+## 5) Smoke Checklist (2 min)
 
 1. Open **Home** tab:
    - API status shows `ok`.
@@ -63,12 +65,16 @@ Scan the QR code from Expo CLI with Expo Go.
 5. Open **Rates** tab:
    - Material rates list loads.
 
-## 5) Common Fixes
+## 6) Common Fixes
 
 - `Network request failed` in app:
   - Verify phone and laptop are on same Wi-Fi.
+  - Re-run `./scripts/mobile/use-lan-api.sh` after Wi-Fi changes.
   - Verify `.env` uses LAN IP, not `localhost`.
   - Verify backend is running and reachable from phone browser.
+- `HTTP 503 Tunnel Unavailable`:
+  - You are still pointing to `*.loca.lt`.
+  - Switch to LAN mode (`npm run start:lan`) and regenerate `mobile/.env` via `./scripts/mobile/use-lan-api.sh`.
 - Backend on macOS blocked:
   - Allow Python incoming connections in macOS firewall prompt.
 - Stale demo data:

@@ -31,10 +31,10 @@
 
 ```bash
 # Terminal 1 — Backend
-cd backend
-pip install -r requirements.txt
-python app.py
-# → http://localhost:5000
+cd recyclerun-team
+pip install -r backend/requirements.txt
+python -m flask --app backend.app:create_app run --host 0.0.0.0 --port 5050
+# → http://localhost:5050
 
 # Terminal 2 — Frontend
 cd frontend
@@ -44,11 +44,8 @@ npm run dev
 
 # Terminal 3 — Mobile (Expo Go)
 cd mobile
-cp .env.example .env
-# For physical device, replace 127.0.0.1 with your laptop LAN IP
-# EXPO_PUBLIC_API_BASE_URL=http://<YOUR_LAN_IP>:5000/api
 npm install
-npm start
+../scripts/mobile/start-expo-lan.sh
 # Scan QR in Expo Go
 ```
 
@@ -70,7 +67,7 @@ Browser (React)
     ├── hooks/     ← Sara: useListings, useRoute
     └── utils/     ← Sara: optimizer.js (client-side route fallback)
          │
-         │ HTTP (localhost:5000)
+         │ HTTP (localhost:5050)
          ▼
 Flask Backend
     │
