@@ -6,8 +6,16 @@ import { TruckMeter } from '../components/driver/TruckMeter';
 import { NotificationOverlay } from '../components/shared/NotificationOverlay';
 import { useListings } from '../hooks/useListings';
 import { useRoute } from '../hooks/useRoute';
+import { api } from '../services/api';
 import { DEMO_LISTINGS, MATERIAL_RATES } from '../services/demoData';
 import { buildDriverMapModel, DEFAULT_DRIVER_CENTER } from '../services/mapPipeline';
+import {
+  applyCompletionSuccess,
+  completeStopPersisted,
+  getStopKey,
+  shouldSkipStopCompletion,
+  summarizeRouteCompletion,
+} from '../services/stopCompletion';
 
 const MAP_WIDTH = 1000;
 const MAP_HEIGHT = 380;
@@ -40,18 +48,22 @@ function projectToCanvas(point, center, viewport) {
 }
 
 export function DriverPage({ onToast }) {
-  const { listings } = useListings();
-  const { route, loading, accepted, notifications, build, accept, reset } = useRoute(listings);
+  const { listings, refresh } = useListings();
+  const { route, loading, accepted, notifications, acceptSummary, build, accept, reset } = useRoute(listings);
   const [driverName, setDriverName] = useState('Alex (Driver)');
   const [maxMin, setMaxMin] = useState(120);
   const [capacity, setCapacity] = useState(1000);
   const [objective, setObjective] = useState('lbs');
   const [completed, setCompleted] = useState(new Set());
+  const [completing, setCompleting] = useState(new Set());
   const [collectedLbs, setCollectedLbs] = useState(0);
   const [earnedDollars, setEarnedDollars] = useState(0);
+  const [completionErrors, setCompletionErrors] = useState({});
+  const [impactSnapshot, setImpactSnapshot] = useState(null);
   const [showNotif, setShowNotif] = useState(false);
   const [selectedStopIndex, setSelectedStopIndex] = useState(null);
   const stopCardRefs = useRef([]);
+  const completingRef = useRef(new Set());
 
   async function handleBuild() {
     await build({ lat: 37.3541, lng: -121.9552, maxMinutes: maxMin, truckCapacity: capacity, objective });
@@ -62,21 +74,73 @@ export function DriverPage({ onToast }) {
     setShowNotif(true);
   }
 
-  function handleComplete(stop) {
-    const key = stop.id || stop.listing_id;
-    if (completed.has(key)) return;
-    const next = new Set(completed); next.add(key);
-    setCompleted(next);
-    setCollectedLbs(p => p + stop.total_lbs);
-    setEarnedDollars(p => p + stop.total_value);
+  async function refreshImpactSnapshot() {
+    const response = await api.getImpact();
+    if (response?.ok && response?.data) {
+      setImpactSnapshot(response.data);
+    }
+  }
+
+  async function handleComplete(stop) {
+    const guard = shouldSkipStopCompletion({
+      stop,
+      completedIds: completed,
+      inFlightIds: completingRef.current,
+    });
+    if (guard.skip) return;
+
+    const key = guard.key;
+    completingRef.current.add(key);
+    setCompleting(new Set(completingRef.current));
+
+    const result = await completeStopPersisted({
+      stop,
+      completedIds: completed,
+      inFlightIds: completingRef.current,
+    });
+    if (!result.ok) {
+      setCompletionErrors((prev) => ({ ...prev, [key]: result.error || 'Failed to mark stop complete' }));
+      onToast(`⚠️ Could not complete stop (${key}): ${result.error || 'Unknown error'}`);
+      completingRef.current.delete(key);
+      setCompleting(new Set(completingRef.current));
+      return;
+    }
+
+    const next = applyCompletionSuccess(
+      { completedIds: completed, collectedLbs, earnedDollars },
+      stop
+    );
+    if (next.changed) {
+      setCompleted(next.completedIds);
+      setCollectedLbs(next.collectedLbs);
+      setEarnedDollars(next.earnedDollars);
+      setCompletionErrors((prev) => {
+        if (!prev[key]) return prev;
+        const cloned = { ...prev };
+        delete cloned[key];
+        return cloned;
+      });
+    }
+
+    await Promise.all([refresh(), refreshImpactSnapshot()]);
+
     const msg = objective === 'lbs'
       ? `✅ Stop done! +${stop.total_lbs} lbs collected`
       : `✅ Stop done! +$${stop.total_value.toFixed(2)} earned`;
     onToast(msg);
+    completingRef.current.delete(key);
+    setCompleting(new Set(completingRef.current));
   }
 
   function handleReset() {
-    reset(); setCompleted(new Set()); setCollectedLbs(0); setEarnedDollars(0); setSelectedStopIndex(null);
+    reset();
+    setCompleted(new Set());
+    setCompleting(new Set());
+    completingRef.current = new Set();
+    setCollectedLbs(0);
+    setEarnedDollars(0);
+    setCompletionErrors({});
+    setSelectedStopIndex(null);
   }
 
   function handleStopCardSelect(index) {
@@ -92,6 +156,10 @@ export function DriverPage({ onToast }) {
   }
 
   const displayListings = listings.length ? listings : DEMO_LISTINGS;
+  const completionSummary = useMemo(
+    () => summarizeRouteCompletion({ routeStops: route?.stops || [], completedIds: completed }),
+    [route, completed]
+  );
   const mapModel = useMemo(
     () => buildDriverMapModel({
       listings: displayListings,
@@ -130,6 +198,10 @@ export function DriverPage({ onToast }) {
       .join(' '),
     [mapModel.polyline, mapModel.center, viewport]
   );
+
+  useEffect(() => {
+    refreshImpactSnapshot();
+  }, []);
 
   useEffect(() => {
     if (!route?.stops?.length) {
@@ -272,6 +344,36 @@ export function DriverPage({ onToast }) {
         <TruckMeter collectedLbs={collectedLbs} earnedDollars={earnedDollars} capacityLbs={capacity} />
       )}
 
+      {accepted && acceptSummary.failedNotificationsCount > 0 && (
+        <div className="card" style={{ marginBottom:'1rem' }}>
+          <div className="section-label" style={{ marginBottom:'0.65rem', color:'var(--amber)' }}>
+            ACTION REQUIRED — NOTIFICATION FAILURES
+          </div>
+          <div style={{ fontFamily:'var(--mono)', fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.6rem' }}>
+            Sent {acceptSummary.notificationsSent}/{acceptSummary.totalStopsRequested} notifications.
+            Failed stops are listed below for manual call follow-up.
+          </div>
+          <div style={{ display:'grid', gap:'0.45rem' }}>
+            {acceptSummary.failedStops.map((item) => (
+              <div key={item.listing_id} style={{
+                border:'1px solid rgba(255,184,0,0.35)',
+                borderRadius:'10px',
+                padding:'0.55rem 0.7rem',
+                background:'rgba(255,184,0,0.08)',
+              }}>
+                <div style={{ fontWeight:700, fontSize:'0.84rem' }}>
+                  {item.household} {item.phone ? `· ${item.phone}` : ''}
+                </div>
+                <div style={{ fontFamily:'var(--mono)', fontSize:'0.75rem', color:'var(--muted)' }}>
+                  stop={item.listing_id} · status={item.status_code} · reason={item.reason}
+                  {item.retryable ? ' · retryable' : ''}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {route?.stops?.length > 0 && (
         <div className="mt-2">
           <div className="section-label" style={{ marginBottom:'1rem' }}>
@@ -286,6 +388,7 @@ export function DriverPage({ onToast }) {
                 style={{
                   borderRadius:'12px',
                   boxShadow: selectedStopIndex === i ? '0 0 0 2px rgba(255,184,0,0.45)' : 'none',
+                  opacity: completing.has(getStopKey(stop)) ? 0.7 : 1,
                 }}
               >
                 <StopCard
@@ -294,10 +397,35 @@ export function DriverPage({ onToast }) {
                   completed={completed.has(stop.id || stop.listing_id)}
                   onComplete={handleComplete}
                 />
+                {completionErrors[getStopKey(stop)] && (
+                  <div style={{
+                    margin:'0.35rem 0 0.2rem 0',
+                    fontFamily:'var(--mono)',
+                    fontSize:'0.72rem',
+                    color:'var(--red)',
+                  }}>
+                    ⚠️ {completionErrors[getStopKey(stop)]}
+                  </div>
+                )}
               </div>
             ))}
           </div>
+          <div style={{ marginTop:'0.55rem', fontFamily:'var(--mono)', fontSize:'0.78rem', color:'var(--muted)' }}>
+            Completed stops: {completionSummary.completedStops}/{completionSummary.totalStops}
+            {completionSummary.allCompleted ? ' · Route complete ✅' : ''}
+          </div>
           <button className="btn btn-secondary btn-full mt-2" onClick={handleReset}>↺ Reset & New Route</button>
+        </div>
+      )}
+
+      {impactSnapshot && (
+        <div className="card" style={{ marginTop:'1rem' }}>
+          <div className="section-label" style={{ marginBottom:'0.65rem' }}>LIVE IMPACT SNAPSHOT</div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))', gap:'0.45rem' }}>
+            <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem' }}>completed_pickups: {impactSnapshot.completed_pickups}</div>
+            <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem' }}>total_lbs_diverted: {impactSnapshot.total_lbs_diverted}</div>
+            <div style={{ fontFamily:'var(--mono)', fontSize:'0.78rem' }}>total_value_paid: ${impactSnapshot.total_value_paid}</div>
+          </div>
         </div>
       )}
 
