@@ -14,22 +14,31 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "RecycleRun uses the camera for live AI preview of recyclable materials."
-      }
+        "NSCameraUsageDescription": "RecycleRun uses the camera for live AI preview and proof-of-pickup capture.",
+        "NSLocationWhenInUseUsageDescription": "RecycleRun uses your location to stamp pickup proof and optimize live routes."
+      },
+      "bundleIdentifier": "com.soham0047.bin2bucksmobile"
     },
     "android": {
       "permissions": [
-        "CAMERA"
+        "CAMERA",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "com.soham0047.bin2bucksmobile"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "react-native-vision-camera"
+    ]
   }
 }

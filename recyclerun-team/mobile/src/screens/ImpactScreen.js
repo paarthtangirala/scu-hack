@@ -4,15 +4,29 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { api } from "../services/api";
 import { Card, colors } from "../components/ui";
 
+const DEMO_ORG_ID = "org_santa_clara_demo";
+
 export function ImpactScreen() {
   const [loading, setLoading] = useState(false);
   const [impact, setImpact] = useState(null);
+  const [dashboard, setDashboard] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const response = await api.getImpact();
-    if (response.ok) {
-      setImpact(response.data);
+    const dashboardResponse = await api.getOrgDashboard(DEMO_ORG_ID, { window: "30d" });
+    if (dashboardResponse.ok) {
+      setDashboard(dashboardResponse.data);
+      setImpact({
+        completed_pickups: Number(dashboardResponse.data?.summary?.completed_pickups || 0),
+        total_lbs_diverted: Number(dashboardResponse.data?.summary?.total_lbs_diverted || 0),
+        total_value_paid: Number(dashboardResponse.data?.summary?.total_value_paid || 0),
+        co2_saved_tons: Number(dashboardResponse.data?.summary?.total_lbs_diverted || 0) * 0.00025,
+      });
+    } else {
+      const response = await api.getImpact();
+      if (response.ok) {
+        setImpact(response.data);
+      }
     }
     setLoading(false);
   }, []);
@@ -45,13 +59,13 @@ export function ImpactScreen() {
         tint: colors.primary,
       },
       {
-        label: "CO2 SAVED",
-        value: `${Number(impact?.co2_saved_tons || 0).toFixed(3)}t`,
-        icon: "leaf",
+        label: "CONTAMINATION",
+        value: `${Math.round(Number(dashboard?.summary?.contamination_rate || 0) * 100)}%`,
+        icon: "alert-circle-outline",
         tint: "#47E59E",
       },
     ],
-    [impact],
+    [dashboard?.summary?.contamination_rate, impact],
   );
 
   return (
@@ -82,30 +96,50 @@ export function ImpactScreen() {
           <View style={styles.infoIconWrap}>
             <MaterialCommunityIcons name="earth" size={28} color={colors.primary} />
           </View>
-          <Text style={styles.infoTitle}>SB 1383 Support</Text>
+          <Text style={styles.infoTitle}>City / EPR Dashboard</Text>
         </View>
         <Text style={styles.infoText}>
-          Bin2Bucks helps Santa Clara exceed California's organic waste reduction targets by ensuring
-          high-value recyclables never hit the landfill.
+          Receipt-derived diversion metrics show what was estimated at capture time, what was actually
+          collected by the driver, and where contamination risk is clustering.
         </Text>
         <View style={styles.progressHead}>
-          <Text style={styles.progressLabel}>GOAL PROGRESS</Text>
-          <Text style={styles.progressPct}>84%</Text>
+          <Text style={styles.progressLabel}>MEAN PICKUP SLA</Text>
+          <Text style={styles.progressPct}>
+            {Number(dashboard?.summary?.mean_pickup_time_minutes || 0).toFixed(0)} min
+          </Text>
         </View>
         <View style={styles.progressTrack}>
-          <View style={styles.progressFill} />
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${Math.max(8, Math.min(100, 100 - Number(dashboard?.summary?.mean_pickup_time_minutes || 0) / 2))}%` },
+            ]}
+          />
         </View>
       </Card>
 
       <Card>
         <View style={styles.safetyHead}>
-          <MaterialCommunityIcons name="shield-check-outline" size={22} color={colors.primary} />
-          <Text style={styles.safetyTitle}>COMPLIANCE & SAFETY</Text>
+          <MaterialCommunityIcons name="file-document-check-outline" size={22} color={colors.primary} />
+          <Text style={styles.safetyTitle}>LATEST RECEIPTS</Text>
         </View>
-        <Text style={styles.safetyText}>
-          Pickups are opt-in only. No curbside scavenging. Commercial pickups operate via partner
-          agreements. All drivers are background checked.
-        </Text>
+        {(dashboard?.latest_receipts || []).length ? (
+          (dashboard?.latest_receipts || []).map((receipt) => (
+            <View key={receipt.receipt_id} style={styles.receiptRow}>
+              <Text style={styles.receiptTitle}>
+                {receipt.household_name} • {Number(receipt.actual_total_lbs || 0).toFixed(1)} lbs
+              </Text>
+              <Text style={styles.safetyText}>
+                {receipt.driver_name} completed {String(receipt.completed_at || "").slice(0, 16).replace("T", " ")} •
+                variance {Number(receipt.variance_lbs || 0).toFixed(1)} lbs
+              </Text>
+            </View>
+          ))
+        ) : (
+          <Text style={styles.safetyText}>
+            No verified receipts yet. Complete a driver stop to populate compliance evidence.
+          </Text>
+        )}
       </Card>
     </ScrollView>
   );
@@ -250,5 +284,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 29,
     fontWeight: "500",
+  },
+  receiptRow: {
+    paddingTop: 10,
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  receiptTitle: {
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "800",
   },
 });

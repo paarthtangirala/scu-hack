@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["LiveVisionPipelineModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.livevisionpipeline.LiveVisionPipelineModule"]
+  }
+}

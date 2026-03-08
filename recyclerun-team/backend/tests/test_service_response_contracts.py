@@ -13,6 +13,8 @@ from backend.services.optimizer import RouteOptimizer
 from backend.services.vision import VisionClassifier
 from backend.services.voice import VoiceNotifier
 from backend.services.gemini_live import GeminiLiveService
+from backend.services.media import media_service
+from backend.services.store import store
 import backend.routes.optimize as optimize_route_module
 import backend.services.optimizer as optimizer_module
 
@@ -352,3 +354,74 @@ def test_classify_contract_backward_compatible_shape():
     assert set(["success", "source", "materials", "total_value", "total_lbs", "notes"]).issubset(demo.keys())
     assert demo["source"] == "demo"
     assert isinstance(demo["materials"], list)
+
+
+def test_pickup_receipt_and_org_dashboard_contract_shape():
+    store.reset_demo()
+    media_asset = store.create_media_asset(
+        purpose="pickup_proof",
+        file_name="proof.jpg",
+        mime_type="image/jpeg",
+        content_bytes=b"hello",
+    )
+    listing = store.all("available")[0]
+    assert store.claim_listing(listing.id) == "claimed"
+    job = store.create_pickup_job(
+        listing_id=listing.id,
+        driver_name="Contract Driver",
+        eta_minutes=14,
+        request_id="contract-receipt-1",
+    )
+    receipt = store.complete_pickup_job(
+        job["pickup_job_id"],
+        actual_materials=[Material(type="cardboard", lbs=9.5)],
+        actual_total_lbs=9.5,
+        contamination_flags=[],
+        completion_media_id=media_asset["media_id"],
+        completed_at="",
+        driver_lat=37.35,
+        driver_lng=-121.95,
+    )
+
+    required_receipt_keys = {
+        "receipt_id",
+        "pickup_job_id",
+        "listing_id",
+        "org_id",
+        "driver_name",
+        "household_name",
+        "address",
+        "lat",
+        "lng",
+        "capture_mode",
+        "source_session_id",
+        "completion_media_id",
+        "estimated_materials",
+        "actual_materials",
+        "estimated_total_lbs",
+        "actual_total_lbs",
+        "estimated_confidence",
+        "variance_lbs",
+        "variance_pct",
+        "contamination_flags",
+        "created_at",
+        "completed_at",
+        "actual_total_value",
+    }
+    assert required_receipt_keys == set(receipt.keys())
+    assert isinstance(receipt["estimated_materials"], list)
+    assert isinstance(receipt["actual_materials"], list)
+    assert _is_number(receipt["actual_total_lbs"])
+    assert _is_number(receipt["actual_total_value"])
+    enriched = media_service.enrich_receipt(receipt, store=store, request_root="http://localhost/")
+    assert enriched["completion_media"]["media_id"] == media_asset["media_id"]
+    assert enriched["completion_media"]["signed_url"].startswith("http://localhost/api/media/")
+
+    dashboard = store.org_dashboard("org_santa_clara_demo", window="30d")
+    assert dashboard["success"] is True
+    assert {"org", "window", "summary", "hotspots", "latest_receipts", "all_receipts", "material_mix", "export_links"}.issubset(dashboard.keys())
+    assert {"completed_pickups", "total_lbs_diverted", "total_value_paid", "contamination_rate"}.issubset(
+        dashboard["summary"].keys()
+    )
+    assert isinstance(dashboard["all_receipts"], list)
+    assert isinstance(dashboard["material_mix"], list)

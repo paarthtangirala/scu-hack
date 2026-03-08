@@ -1,8 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Animated,
-  Easing,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,11 +7,12 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { CameraView, useCameraPermissions } from "expo-camera";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 
 import { Card, PrimaryButton, SectionTitle, SecondaryButton, colors } from "../components/ui";
-import { API_BASE_URL, LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
+import { LIVE_PREVIEW_FRAME_INTERVAL_MS } from "../config";
+import { LiveScanPanel } from "../components/live/LiveScanPanel";
+import { useLiveVisionController } from "../hooks/useLiveVisionController";
 import { api } from "../services/api";
 import { FALLBACK_MATERIALS } from "../services/materialsFallback";
 
@@ -41,21 +39,6 @@ function normalizeLiveDetectionLbs(rawLbs, rawCount) {
   return Math.round(total * 10) / 10;
 }
 
-function buildDetectionSignature(rows) {
-  const normalized = (Array.isArray(rows) ? rows : [])
-    .map((row) => {
-      const type = typeof row?.type === "string" ? row.type.trim() : "";
-      if (!type) return "";
-      const count = normalizeLiveDetectionCount(row?.count);
-      const lbs = normalizeLiveDetectionLbs(row?.lbs, count);
-      if (lbs <= 0) return "";
-      return `${type}:${count}:${lbs.toFixed(1)}`;
-    })
-    .filter(Boolean)
-    .sort();
-  return normalized.join("|");
-}
-
 function materialDisplayName(materialMap, type) {
   const fallback = String(type || "").replace(/_/g, " ").trim();
   if (!type) return fallback;
@@ -78,123 +61,16 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     notes: "",
   });
   const [message, setMessage] = useState("");
-  const [aiMaterials, setAiMaterials] = useState([]);
   const [manualRows, setManualRows] = useState([]);
   const [lockedTypes, setLockedTypes] = useState([]);
-  const lockedTypesRef = useRef([]);
   const [manualType, setManualType] = useState("cardboard");
   const [manualLbs, setManualLbs] = useState("");
   const [loadingSubmit, setLoadingSubmit] = useState(false);
-  const [liveSupported, setLiveSupported] = useState(true);
-  const [aiSource, setAiSource] = useState("");
-  const [liveSession, setLiveSession] = useState(null);
-  const [liveRunning, setLiveRunning] = useState(false);
-  const [startingLive, setStartingLive] = useState(false);
+  const [liveScanVisible, setLiveScanVisible] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
-  const [pendingDetection, setPendingDetection] = useState(null);
-  const [pendingDetectionQueue, setPendingDetectionQueue] = useState([]);
-  const [latestFrameDetections, setLatestFrameDetections] = useState([]);
-  const [scanDecisionPromptVisible, setScanDecisionPromptVisible] = useState(false);
-  const [livePausedForReview, setLivePausedForReview] = useState(false);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-
-  const cameraRef = useRef(null);
-  const liveSessionIdRef = useRef("");
-  const frameLoopRef = useRef(null);
-  const frameBusyRef = useRef(false);
-  const livePausedForReviewRef = useRef(false);
-  const pendingDetectionRef = useRef(null);
-  const pendingDetectionQueueRef = useRef([]);
-  const scanDecisionPromptVisibleRef = useRef(false);
-  const lastPromptSignatureRef = useRef("");
-  const scanPulse = useRef(new Animated.Value(0)).current;
+  const cameraSurfaceRef = useRef(null);
 
   const materialKeys = useMemo(() => Object.keys(materials), [materials]);
-  const liveFlowStage = useMemo(() => {
-    if (startingLive) return "starting";
-    if (!liveRunning) return "idle";
-    if (pendingDetection) return "review";
-    if (scanDecisionPromptVisible) return "decision";
-    return "scanning";
-  }, [liveRunning, pendingDetection, scanDecisionPromptVisible, startingLive]);
-
-  const liveFlowMessage = useMemo(() => {
-    if (liveFlowStage === "starting") return "Starting session and capturing first frame.";
-    if (liveFlowStage === "review") return "Review detection, then add or skip.";
-    if (liveFlowStage === "decision") return "Choose to keep scanning or end the live session.";
-    if (liveFlowStage === "scanning") return "Scanning camera feed and waiting for next detection.";
-    return "Tap Start Live Preview to begin guided scan mode.";
-  }, [liveFlowStage]);
-
-  const activelyScanning = useMemo(
-    () => liveRunning && !startingLive && !livePausedForReview && !pendingDetection && !scanDecisionPromptVisible,
-    [liveRunning, startingLive, livePausedForReview, pendingDetection, scanDecisionPromptVisible],
-  );
-
-  const scanPulseScale = useMemo(
-    () => scanPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.04] }),
-    [scanPulse],
-  );
-
-  const scanPulseOpacity = useMemo(
-    () => scanPulse.interpolate({ inputRange: [0, 1], outputRange: [0.65, 1] }),
-    [scanPulse],
-  );
-
-  useEffect(() => {
-    lockedTypesRef.current = lockedTypes;
-  }, [lockedTypes]);
-
-  useEffect(() => {
-    livePausedForReviewRef.current = livePausedForReview;
-  }, [livePausedForReview]);
-
-  useEffect(() => {
-    pendingDetectionRef.current = pendingDetection;
-  }, [pendingDetection]);
-
-  useEffect(() => {
-    pendingDetectionQueueRef.current = pendingDetectionQueue;
-  }, [pendingDetectionQueue]);
-
-  useEffect(() => {
-    scanDecisionPromptVisibleRef.current = scanDecisionPromptVisible;
-  }, [scanDecisionPromptVisible]);
-
-  useEffect(() => {
-    if (!activelyScanning) {
-      scanPulse.stopAnimation();
-      scanPulse.setValue(0);
-      return;
-    }
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scanPulse, {
-          toValue: 1,
-          duration: 900,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-        Animated.timing(scanPulse, {
-          toValue: 0,
-          duration: 900,
-          easing: Easing.inOut(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    pulse.start();
-    return () => {
-      pulse.stop();
-      scanPulse.setValue(0);
-    };
-  }, [activelyScanning, scanPulse]);
-
-  useEffect(() => {
-    if (!cameraPermission?.granted) {
-      setCameraReady(false);
-    }
-  }, [cameraPermission?.granted]);
 
   const loadMaterials = useCallback(async () => {
     const response = await api.getMaterials();
@@ -226,61 +102,10 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
     }));
   }, [useProfileContact, profileName, profilePhone]);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const probe = await api.getLiveVisionSessionHealth("probe");
-      if (!mounted) return;
-      if (probe.ok) {
-        setLiveSupported(true);
-        return;
-      }
-      if (probe.status !== 404) {
-        return;
-      }
-      const code = probe?.data?.code || probe?.data?.error || "";
-      if (code === "live_session_not_found") {
-        setLiveSupported(true);
-        return;
-      }
-      setLiveSupported(false);
-      setMessage(`Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`);
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   const upsertManualLock = useCallback((type) => {
     const normalized = String(type || "").trim();
     if (!normalized) return;
     setLockedTypes((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
-  }, []);
-
-  const normalizeAiRows = useCallback((rows) => {
-    const locked = new Set(lockedTypesRef.current);
-    const merged = new Map();
-    const order = [];
-
-    (Array.isArray(rows) ? rows : []).forEach((row) => {
-      const type = typeof row?.type === "string" ? row.type.trim() : "";
-      const safeCount = normalizeLiveDetectionCount(row?.count);
-      const lbs = normalizeLiveDetectionLbs(row?.lbs, safeCount);
-      if (!type || lbs <= 0 || locked.has(type)) return;
-      if (!merged.has(type)) {
-        merged.set(type, { lbs, count: safeCount });
-        order.push(type);
-        return;
-      }
-      const current = merged.get(type);
-      merged.set(type, { lbs: current.lbs + lbs, count: current.count + safeCount });
-    });
-
-    return order.map((type) => ({
-      type,
-      lbs: Math.round(merged.get(type).lbs * 10) / 10,
-      count: merged.get(type).count,
-    }));
   }, []);
 
   const addManualRow = () => {
@@ -313,317 +138,92 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       }),
     );
   };
-
-  const clearLiveFrameLoop = useCallback(() => {
-    if (!frameLoopRef.current) return;
-    clearInterval(frameLoopRef.current);
-    frameLoopRef.current = null;
-  }, []);
-
-  const stopLivePreview = useCallback(async () => {
-    clearLiveFrameLoop();
-    setLiveRunning(false);
-    setStartingLive(false);
-    setLivePausedForReview(false);
-    livePausedForReviewRef.current = false;
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setPendingDetectionQueue([]);
-    pendingDetectionQueueRef.current = [];
-    setLatestFrameDetections([]);
-    setScanDecisionPromptVisible(false);
-    scanDecisionPromptVisibleRef.current = false;
-    lastPromptSignatureRef.current = "";
-    frameBusyRef.current = false;
-    const sessionId = liveSessionIdRef.current;
-    liveSessionIdRef.current = "";
-    setLiveSession(null);
-    if (!sessionId) return;
-    await api.stopLiveVisionSession(sessionId);
-  }, [clearLiveFrameLoop]);
-
-  const sendLiveFrame = useCallback(
-    async (sessionId) => {
-      if (!sessionId || frameBusyRef.current || !cameraRef.current || livePausedForReviewRef.current) return;
-      frameBusyRef.current = true;
-      try {
-        const photo = await cameraRef.current.takePictureAsync({
-          base64: true,
-          quality: 0.35,
-          skipProcessing: true,
-        });
-        if (!photo?.base64) return;
-
-        const response = await api.sendLiveVisionFrame(sessionId, {
-          frame_base64: photo.base64,
-          mime_type: "image/jpeg",
-        });
-
-        if (!response.ok) {
-          if (response.status === 404) {
-            setLiveSupported(false);
-            setMessage(`Live preview unavailable on backend (${API_BASE_URL}). Deploy backend with /api/live-vision routes.`);
-            return;
-          }
-          setMessage(formatApiFailure("Live preview", response));
-          return;
-        }
-
-        setAiSource(response.data?.source || "gemini_live");
-        const normalizedRows = normalizeAiRows(response.data?.materials || []);
-        const detectionSignature = buildDetectionSignature(normalizedRows);
-        const fromCache = Boolean(response.data?.from_cache);
-        setAiMaterials(normalizedRows);
-
-        if (response.data?.source === "gemini_live_demo") {
-          const fallbackReason = String(response.data?.notes || "")
-            .replace(/^Live fallback:\s*/i, "")
-            .trim();
-          const detail = fallbackReason ? ` (${fallbackReason})` : "";
-          setMessage(`Live AI fallback mode active${detail}. You can still add/edit materials manually.`);
-        } else if (fromCache) {
-          if (!pendingDetectionRef.current && !scanDecisionPromptVisibleRef.current) {
-            const reason = String(response.data?.fallback_reason || "").trim();
-            const detail = reason ? ` (${reason})` : "";
-            setMessage(`Live AI waiting for a fresh frame${detail}. Keep scanning.`);
-          }
-        } else {
-          setMessage("Live AI preview active.");
-          if (normalizedRows.length > 0 && !pendingDetectionRef.current && !scanDecisionPromptVisibleRef.current) {
-            if (detectionSignature && detectionSignature === lastPromptSignatureRef.current) {
-              setMessage("No new object change detected yet. Keep scanning.");
-              return;
-            }
-
-            const queue = normalizedRows
-              .slice()
-              .sort((a, b) => Number(b?.lbs || 0) - Number(a?.lbs || 0));
-            const primary = queue[0];
-            if (primary?.type) {
-              lastPromptSignatureRef.current = detectionSignature;
-              const remaining = queue.slice(1);
-              setLatestFrameDetections(queue);
-              setPendingDetection({
-                type: primary.type,
-                lbs: Number(primary.lbs || 0),
-                count: Number(primary.count || 1),
-                source: response.data?.source || "gemini_live",
-              });
-              pendingDetectionRef.current = {
-                type: primary.type,
-                lbs: Number(primary.lbs || 0),
-                count: Number(primary.count || 1),
-                source: response.data?.source || "gemini_live",
-              };
-              setPendingDetectionQueue(remaining);
-              pendingDetectionQueueRef.current = remaining;
-              setLivePausedForReview(true);
-              livePausedForReviewRef.current = true;
-              setScanDecisionPromptVisible(false);
-              scanDecisionPromptVisibleRef.current = false;
-              clearLiveFrameLoop();
-              setMessage(
-                `Detected ${materialDisplayName(materials, primary.type)}${
-                  Number(primary.count || 1) > 1 ? ` x${Number(primary.count || 1)}` : ""
-                } (${Number(primary.lbs || 0).toFixed(1)} lbs). Confirm to add it.`,
-              );
-            }
-          }
-        }
-      } catch (error) {
-        const errorMessage = String(error?.message || "Unable to capture camera frame.");
-        if (errorMessage.toLowerCase().includes("camera unmounted")) {
-          await stopLivePreview();
-          setMessage("Live preview was interrupted by camera remount. Tap Start Live Preview again.");
-          return;
-        }
-        setMessage(`Live preview frame failed: ${errorMessage}`);
-      } finally {
-        frameBusyRef.current = false;
-      }
-    },
-    [clearLiveFrameLoop, materials, normalizeAiRows, stopLivePreview],
-  );
-
-  const runLiveLoop = useCallback(
-    (sessionId) => {
-      if (!sessionId) return;
-      clearLiveFrameLoop();
-      frameLoopRef.current = setInterval(() => {
-        sendLiveFrame(sessionId);
-      }, LIVE_PREVIEW_FRAME_INTERVAL_MS);
-    },
-    [clearLiveFrameLoop, sendLiveFrame],
-  );
-
-  const resumeScanning = useCallback(async () => {
-    const sessionId = liveSessionIdRef.current;
-    if (!sessionId) return;
-    setLivePausedForReview(false);
-    livePausedForReviewRef.current = false;
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setPendingDetectionQueue([]);
-    pendingDetectionQueueRef.current = [];
-    setLatestFrameDetections([]);
-    setScanDecisionPromptVisible(false);
-    scanDecisionPromptVisibleRef.current = false;
-    setMessage("Live AI preview active.");
-    await sendLiveFrame(sessionId);
-    runLiveLoop(sessionId);
-  }, [runLiveLoop, sendLiveFrame]);
-
-  const finishDetectionDecision = useCallback((added) => {
-    const queue = pendingDetectionQueueRef.current;
-    if (queue.length > 0) {
-      const [nextDetection, ...rest] = queue;
-      setPendingDetectionQueue(rest);
-      pendingDetectionQueueRef.current = rest;
-      setPendingDetection(nextDetection);
-      pendingDetectionRef.current = nextDetection;
-      setLivePausedForReview(true);
-      livePausedForReviewRef.current = true;
-      setScanDecisionPromptVisible(false);
-      scanDecisionPromptVisibleRef.current = false;
-      setMessage(
-        `${added ? "Item added." : "Item skipped."} Next detected item: ${materialDisplayName(materials, nextDetection.type)}${
-          Number(nextDetection.count || 1) > 1 ? ` x${Number(nextDetection.count || 1)}` : ""
-        } (${Number(nextDetection.lbs || 0).toFixed(1)} lbs).`,
-      );
-      return;
-    }
-    if (added) {
-      setMessage("Item added. Keep scanning or end live preview.");
-    } else {
-      setMessage("Item skipped. Keep scanning or end live preview.");
-    }
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setScanDecisionPromptVisible(true);
-    scanDecisionPromptVisibleRef.current = true;
-  }, [materials]);
-
-  const confirmAddDetected = useCallback(() => {
-    if (!pendingDetection?.type || !Number.isFinite(Number(pendingDetection?.lbs))) {
-      finishDetectionDecision(false);
-      return;
-    }
-    const count = normalizeLiveDetectionCount(pendingDetection.count);
-    const lbs = normalizeLiveDetectionLbs(pendingDetection.lbs, count);
-    if (lbs <= 0) {
-      finishDetectionDecision(false);
-      return;
-    }
+  const addSuggestedManualRow = useCallback((suggestion) => {
+    const lbs = normalizeLiveDetectionLbs(suggestion?.lbs, suggestion?.count);
+    if (!suggestion?.type || lbs <= 0) return;
+    upsertManualLock(suggestion.type);
     setManualRows((prev) => {
-      const existingIdx = prev.findIndex((row) => row.type === pendingDetection.type);
+      const existingIdx = prev.findIndex((row) => row.type === suggestion.type);
       if (existingIdx === -1) {
-        return [...prev, { id: String(Date.now()), type: pendingDetection.type, lbs, count }];
+        return [
+          ...prev,
+          {
+            id: String(Date.now()),
+            type: suggestion.type,
+            lbs,
+            count: normalizeLiveDetectionCount(suggestion.count),
+          },
+        ];
       }
-      const next = [...prev];
+      const next = prev.slice();
       const existing = next[existingIdx];
       next[existingIdx] = {
         ...existing,
         lbs: Math.round((Number(existing.lbs || 0) + lbs) * 10) / 10,
-        count: normalizeLiveDetectionCount(existing.count) + count,
+        count: normalizeLiveDetectionCount(existing.count) + normalizeLiveDetectionCount(suggestion.count),
       };
       return next;
     });
-    finishDetectionDecision(true);
-  }, [finishDetectionDecision, pendingDetection]);
+  }, [upsertManualLock]);
 
-  const skipDetected = useCallback(() => {
-    finishDetectionDecision(false);
-  }, [finishDetectionDecision]);
+  const liveController = useLiveVisionController({
+    cameraSurfaceRef,
+    lockedTypes,
+    profileId: profile?.id || "",
+    onEditSuggestion: addSuggestedManualRow,
+  });
 
-  const startLivePreview = useCallback(async () => {
-    if (startingLive || liveRunning) return;
-    setStartingLive(true);
-    const permission = cameraPermission?.granted ? cameraPermission : await requestCameraPermission();
-    if (!permission?.granted) {
-      setMessage("Camera permission is required for Live AI Preview");
-      setStartingLive(false);
-      return;
-    }
-    if (!cameraReady) {
-      setMessage("Camera is initializing. Wait 1-2 seconds and tap Start Live Preview again.");
-      setStartingLive(false);
-      return;
-    }
+  const aiMaterials = liveController.aiMaterials;
+  const aiSource = liveController.aiSource;
+  const lastSourceSessionId = liveController.sourceSessionId;
+  const liveRunning = liveController.liveRunning;
+  const startingLive = liveController.startingLive;
+  const pendingDetection = liveController.pendingDetection;
+  const pendingDetectionQueue = liveController.pendingDetectionQueue;
+  const latestFrameDetections = liveController.latestFrameDetections;
+  const activelyScanning = liveController.activelyScanning;
+  const combinedMessage = liveController.message || message;
 
-    const start = await api.startLiveVisionSession({});
-    if (!start.ok) {
-      if (start.status === 404) {
-        setLiveSupported(false);
-        setMessage(`Live session start failed: backend missing /api/live-vision routes at ${API_BASE_URL}.`);
-      } else {
-        setMessage(formatApiFailure("Live session start", start));
-      }
-      setStartingLive(false);
-      return;
-    }
+  const liveFlowStage = useMemo(() => {
+    if (startingLive) return "starting";
+    if (!liveRunning) return "idle";
+    if (pendingDetection) return "review";
+    return "scanning";
+  }, [liveRunning, pendingDetection, startingLive]);
 
-    const sessionId = start.data?.session_id;
-    if (!sessionId) {
-      setMessage("Live session did not return session_id");
-      setStartingLive(false);
-      return;
-    }
+  const liveFlowMessage = useMemo(() => {
+    if (liveFlowStage === "starting") return "Provisioning Live API token and opening direct AI stream.";
+    if (liveFlowStage === "review") return "Review the stable suggestion. Camera preview stays live behind the review card.";
+    if (liveController.controllerState === "degraded_fallback") return "Direct live path degraded. Using structured fallback mode.";
+    if (liveFlowStage === "scanning") return "Streaming frames and waiting for a stable recyclable suggestion.";
+    return "Tap Start Live Preview to begin guided scan mode.";
+  }, [liveController.controllerState, liveFlowStage]);
 
-    try {
-      setLiveSession(start.data);
-      liveSessionIdRef.current = sessionId;
-      setLiveRunning(true);
-      setLivePausedForReview(false);
-      livePausedForReviewRef.current = false;
-      setPendingDetection(null);
-      pendingDetectionRef.current = null;
-      setPendingDetectionQueue([]);
-      pendingDetectionQueueRef.current = [];
-      setLatestFrameDetections([]);
-      setScanDecisionPromptVisible(false);
-      scanDecisionPromptVisibleRef.current = false;
-      lastPromptSignatureRef.current = "";
-      setAiSource(start.data?.source_mode || "");
-      await sendLiveFrame(sessionId);
-      runLiveLoop(sessionId);
-    } catch (error) {
-      setMessage(`Live session start failed: ${error?.message || "Unknown error"}`);
-      await api.stopLiveVisionSession(sessionId);
-      liveSessionIdRef.current = "";
-      setLiveSession(null);
-      setLiveRunning(false);
-    } finally {
-      setStartingLive(false);
-    }
-  }, [cameraPermission, cameraReady, liveRunning, requestCameraPermission, runLiveLoop, sendLiveFrame, startingLive]);
-
-  useEffect(() => {
-    return () => {
-      void stopLivePreview();
-    };
-  }, [stopLivePreview]);
-
-  useEffect(() => {
-    const locked = new Set(lockedTypes);
-    setAiMaterials((prev) => prev.filter((row) => !locked.has(row.type)));
-  }, [lockedTypes]);
-
-  const resetAiSuggestions = () => {
+  const resetAiSuggestions = useCallback(() => {
     setLockedTypes([]);
-    setAiMaterials([]);
-    setAiSource("");
-    setPendingDetection(null);
-    pendingDetectionRef.current = null;
-    setPendingDetectionQueue([]);
-    pendingDetectionQueueRef.current = [];
-    setLatestFrameDetections([]);
-    setScanDecisionPromptVisible(false);
-    scanDecisionPromptVisibleRef.current = false;
-    setLivePausedForReview(false);
-    livePausedForReviewRef.current = false;
-    lastPromptSignatureRef.current = "";
-    setMessage("AI suggestion locks reset. You can restart live preview to refill suggestions.");
-  };
+    liveController.reset();
+    setMessage("AI suggestion locks reset. Restart live preview or continue editing manually.");
+  }, [liveController]);
+
+  const openLiveScanner = useCallback(() => {
+    setLiveScanVisible(true);
+  }, []);
+
+  const closeLiveScanner = useCallback(() => {
+    setLiveScanVisible(false);
+    if (liveController.liveRunning || liveController.startingLive) {
+      void liveController.stop("Live preview stopped.");
+    }
+  }, [liveController]);
+
+  const liveStatusText = useMemo(() => {
+    if (liveController.controllerState === "reconnecting") return "Reconnecting AI";
+    if (liveController.controllerState === "tracking_only") return "Tracking only";
+    if (liveController.controllerState === "degraded_fallback") return "Legacy fallback";
+    if (pendingDetection) return "Review suggestion";
+    if (activelyScanning) return "Scanning";
+    return "Ready";
+  }, [activelyScanning, liveController.controllerState, pendingDetection]);
 
   const submitListing = async () => {
     const effectiveName = (useProfileContact ? profileName : form.household_name).trim();
@@ -646,12 +246,30 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       return;
     }
 
+    const estimatedRows = (aiMaterials.length ? aiMaterials : merged)
+      .map((row) => ({ type: row.type, lbs: Number(row.lbs) }))
+      .filter((row) => row.type && row.lbs > 0);
+    const estimatedTotalLbs = Math.round(
+      estimatedRows.reduce((sum, row) => sum + Number(row.lbs || 0), 0) * 10,
+    ) / 10;
+    const captureMode = aiSource ? "live_ai" : "manual";
+    const estimatedConfidence = aiSource
+      ? Math.round(
+        ((aiMaterials.reduce((sum, row) => sum + Number(row.confidence || 0.82), 0) / Math.max(aiMaterials.length, 1)) || 0.82) * 100,
+      ) / 100
+      : 1.0;
+
     setLoadingSubmit(true);
     const response = await api.createListing({
       ...form,
       household_name: effectiveName,
       phone: effectivePhone,
       materials: merged,
+      estimated_materials: estimatedRows,
+      capture_mode: captureMode,
+      source_session_id: lastSourceSessionId || "",
+      estimated_total_lbs: estimatedTotalLbs,
+      estimated_confidence: estimatedConfidence,
     });
     setLoadingSubmit(false);
 
@@ -674,16 +292,16 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
       phone: useProfileContact ? profilePhone : prev.phone,
       notes: "",
     }));
-    setAiMaterials([]);
-    setAiSource("");
     setManualRows([]);
     setManualLbs("");
     setLockedTypes([]);
-    stopLivePreview();
+    liveController.reset();
+    void liveController.stop("Listing posted. Live preview stopped.");
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <>
+      <ScrollView contentContainerStyle={styles.container}>
       <SectionTitle title="Post Listing" subtitle="Household or small business pickup request" />
 
       <Card>
@@ -766,56 +384,16 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
 
       <Card>
         <Text style={styles.subTitle}>AI Classify (Live Preview)</Text>
-
-        {cameraPermission?.granted ? (
-          <CameraView
-            ref={cameraRef}
-            style={styles.cameraPreview}
-            facing="back"
-            onCameraReady={() => setCameraReady(true)}
-            onMountError={(event) => {
-              setCameraReady(false);
-              setMessage(`Camera mount failed: ${event?.nativeEvent?.message || "Unknown camera error"}`);
-            }}
-          />
-        ) : (
-          <View style={styles.permissionBox}>
-            <Text style={styles.permissionText}>Camera permission required for live preview.</Text>
-            <SecondaryButton title="Enable Camera" onPress={requestCameraPermission} />
-          </View>
-        )}
-
         <View style={styles.liveButtonRow}>
           <PrimaryButton
-            title={liveRunning ? "Stop Live Preview" : startingLive ? "Starting Live Preview..." : "Start Live Preview"}
-            onPress={liveRunning ? stopLivePreview : startLivePreview}
-            loading={startingLive}
-            disabled={
-              startingLive ||
-              (cameraPermission?.granted && !cameraReady && !liveRunning) ||
-              !liveSupported
-            }
+            title={liveRunning ? "Return to Scanner" : "Open Live Scanner"}
+            onPress={openLiveScanner}
           />
           <SecondaryButton title="Reset AI Suggestions" onPress={resetAiSuggestions} />
         </View>
 
-        {activelyScanning ? (
-          <Animated.View
-            style={[
-              styles.scanBanner,
-              {
-                opacity: scanPulseOpacity,
-                transform: [{ scale: scanPulseScale }],
-              },
-            ]}
-          >
-            <ActivityIndicator color={colors.primaryDark} />
-            <Text style={styles.scanBannerText}>AI scanning frame stream...</Text>
-          </Animated.View>
-        ) : null}
-
         <Text style={styles.liveHint}>
-          Frame cadence: {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms. Manual edits lock types from AI overwrite.
+          Native VisionCamera + ML Kit tracking runs first on dev builds. Legacy classification fallback remains available when native tracking or direct live transport is unavailable.
         </Text>
 
         <View style={styles.flowCard}>
@@ -828,67 +406,37 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
               <Text style={styles.flowPillText}>Detect</Text>
             </View>
             <View style={[styles.flowPill, liveFlowStage === "review" ? styles.flowPillActive : null]}>
-              <Text style={styles.flowPillText}>Confirm</Text>
-            </View>
-            <View style={[styles.flowPill, liveFlowStage === "decision" ? styles.flowPillActive : null]}>
-              <Text style={styles.flowPillText}>Continue</Text>
+              <Text style={styles.flowPillText}>Review</Text>
             </View>
           </View>
           <Text style={styles.flowCaption}>{liveFlowMessage}</Text>
         </View>
 
-        {pendingDetection ? (
-          <View style={styles.confirmBox}>
-            <Text style={styles.confirmTitle}>Detected Item</Text>
-            <Text style={styles.confirmText}>
-              {materialDisplayName(materials, pendingDetection.type)}
-              {Number(pendingDetection.count || 1) > 1 ? ` x${Number(pendingDetection.count || 1)}` : ""}
-              {" - "}
-              {Number(pendingDetection.lbs || 0).toFixed(1)} lbs
-            </Text>
-            <Text style={styles.confirmText}>Add this item to the listing?</Text>
-
-            {latestFrameDetections.length > 1 ? (
-              <View style={styles.detectedGroup}>
-                <Text style={styles.detectedGroupTitle}>All Categories In Current Frame</Text>
-                {latestFrameDetections.map((row, idx) => (
-                  <Text key={`${row.type}-${idx}`} style={styles.detectedGroupRow}>
-                    {materialDisplayName(materials, row.type)}
-                    {Number(row.count || 1) > 1 ? ` x${Number(row.count || 1)}` : ""}
-                    {" - "}
-                    {Number(row.lbs || 0).toFixed(1)} lbs
-                  </Text>
-                ))}
-              </View>
-            ) : null}
-
-            <View style={styles.confirmActions}>
-              <PrimaryButton title="Add Item" onPress={confirmAddDetected} />
-              <SecondaryButton title="Skip Item" onPress={skipDetected} />
-            </View>
-          </View>
-        ) : null}
-
-        {scanDecisionPromptVisible ? (
-          <View style={styles.confirmBox}>
-            <Text style={styles.confirmTitle}>Continue Live Scan?</Text>
-            <View style={styles.confirmActions}>
-              <PrimaryButton title="Keep Scanning" onPress={resumeScanning} />
-              <SecondaryButton title="End Live Preview" onPress={stopLivePreview} />
-            </View>
-          </View>
-        ) : null}
+        <View style={styles.liveSummaryCard}>
+          <Text style={styles.liveSummaryTitle}>{liveStatusText}</Text>
+          <Text style={styles.liveSummaryText}>
+            {combinedMessage || "Live scanner uses native tracking when available, then falls back to structured backend modes."}
+          </Text>
+          <Text style={styles.liveSummaryMeta}>
+            Transport {liveController.directAvailable ? "direct Gemini Live" : "legacy/demo"} · frame cadence fallback {LIVE_PREVIEW_FRAME_INTERVAL_MS}ms
+          </Text>
+        </View>
 
         {aiMaterials.length ? (
           <View style={styles.materialList}>
-            <Text style={styles.sourceTag}>Source: {aiSource || "unknown"}</Text>
+            <Text style={styles.sourceTag}>Source: {aiSource || "unknown"} · session {String(lastSourceSessionId || "").slice(0, 12) || "n/a"}</Text>
             {aiMaterials.map((m, idx) => (
               <View style={styles.materialRow} key={`${m.type}-${idx}`}>
                 <Text style={styles.materialName}>
                   {materialDisplayName(materials, m.type)}
                   {Number(m.count || 1) > 1 ? ` x${Number(m.count || 1)}` : ""}
                 </Text>
-                <Text style={styles.materialWeight}>{Number(m.lbs).toFixed(1)} lbs</Text>
+                <Text style={styles.materialWeight}>
+                  {Number(m.lbs).toFixed(1)} lbs
+                  {Number.isFinite(Number(m.confidence))
+                    ? ` · ${Math.round(Number(m.confidence) * 100)}%`
+                    : ""}
+                </Text>
               </View>
             ))}
           </View>
@@ -947,9 +495,9 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
         ))}
       </Card>
 
-      {message ? (
+      {combinedMessage ? (
         <View style={styles.messageBar}>
-          <Text style={styles.message}>{message}</Text>
+          <Text style={styles.message}>{combinedMessage}</Text>
         </View>
       ) : null}
 
@@ -959,7 +507,44 @@ export function PostScreen({ profile = null, onListingPosted = () => {} }) {
         loading={loadingSubmit}
         disabled={loadingSubmit}
       />
-    </ScrollView>
+      </ScrollView>
+
+      <LiveScanPanel
+        visible={liveScanVisible}
+        cameraSurfaceRef={cameraSurfaceRef}
+        active={liveScanVisible && (liveRunning || startingLive || activelyScanning)}
+        overlayTracks={liveController.overlayTracks}
+        highlightedTrackId={liveController.highlightedTrackId}
+        statusText={liveStatusText}
+        flowMessage={liveFlowMessage}
+        liveRunning={liveRunning}
+        startingLive={startingLive}
+        pendingDetection={pendingDetection ? {
+          ...pendingDetection,
+          label: materialDisplayName(materials, pendingDetection.type),
+        } : null}
+        pendingDetectionQueue={pendingDetectionQueue}
+        latestFrameDetections={latestFrameDetections.map((row) => ({
+          ...row,
+          label: materialDisplayName(materials, row.type),
+        }))}
+        message={combinedMessage}
+        onReadyChange={(ready, error) => {
+          setCameraReady(Boolean(ready));
+          if (!ready && error?.message) {
+            setMessage(`Camera mount failed: ${error.message}`);
+          }
+        }}
+        onNativeTracks={liveController.handleNativeTracks}
+        onClose={closeLiveScanner}
+        onStart={() => void liveController.start()}
+        onStop={() => void liveController.stop("Live preview stopped.")}
+        onReset={resetAiSuggestions}
+        onConfirm={liveController.confirmPendingCandidate}
+        onEdit={liveController.editPendingCandidate}
+        onSkip={liveController.skipPendingCandidate}
+      />
+    </>
   );
 }
 
@@ -1078,23 +663,31 @@ const styles = StyleSheet.create({
   liveButtonRow: {
     gap: 10,
   },
-  scanBanner: {
-    marginTop: 10,
-    borderRadius: 14,
+  liveSummaryCard: {
+    marginTop: 12,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(0, 232, 122, 0.42)",
-    backgroundColor: colors.primary,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    borderColor: colors.border,
+    padding: 14,
+    backgroundColor: "rgba(5, 19, 12, 0.72)",
   },
-  scanBannerText: {
-    color: colors.primaryDark,
-    fontSize: 14,
+  liveSummaryTitle: {
+    color: colors.ink,
+    fontSize: 18,
     fontWeight: "800",
-    letterSpacing: 0.2,
+    marginBottom: 6,
+  },
+  liveSummaryText: {
+    color: colors.ink,
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  liveSummaryMeta: {
+    marginTop: 8,
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
   },
   liveHint: {
     marginTop: 10,

@@ -3,6 +3,7 @@ import { DEMO_LISTINGS, MATERIAL_RATES } from './demoData';
 
 export const IMPACT_CACHE_KEY = 'impact_cache_v1';
 export const MATERIALS_CACHE_KEY = 'materials_cache_v1';
+export const DEFAULT_DASHBOARD_ORG_ID = 'org_santa_clara_demo';
 
 function toFiniteNumber(value, defaultValue = 0) {
   const num = Number(value);
@@ -72,6 +73,35 @@ export function normalizeImpactPayload(payload) {
     total_lbs_diverted: Number(toFiniteNumber(payload.total_lbs_diverted, 0).toFixed(1)),
     total_value_paid: Number(toFiniteNumber(payload.total_value_paid, 0).toFixed(2)),
     co2_saved_tons: Number(toFiniteNumber(payload.co2_saved_tons, 0).toFixed(2)),
+  };
+}
+
+export function normalizeOrgDashboardPayload(payload) {
+  if (!isPlainObject(payload) || !isPlainObject(payload.summary)) {
+    return null;
+  }
+
+  const summary = {
+    completed_pickups: toFiniteNumber(payload.summary.completed_pickups, 0),
+    total_lbs_diverted: Number(toFiniteNumber(payload.summary.total_lbs_diverted, 0).toFixed(1)),
+    total_value_paid: Number(toFiniteNumber(payload.summary.total_value_paid, 0).toFixed(2)),
+    contamination_rate: Number(toFiniteNumber(payload.summary.contamination_rate, 0).toFixed(2)),
+    mean_pickup_time_minutes: Number(toFiniteNumber(payload.summary.mean_pickup_time_minutes, 0).toFixed(1)),
+    mean_estimated_confidence: Number(toFiniteNumber(payload.summary.mean_estimated_confidence, 0).toFixed(2)),
+    mean_variance_lbs: Number(toFiniteNumber(payload.summary.mean_variance_lbs, 0).toFixed(1)),
+    co2_saved_tons: Number((toFiniteNumber(payload.summary.total_lbs_diverted, 0) * 0.00025).toFixed(2)),
+  };
+
+  return {
+    org: isPlainObject(payload.org) ? payload.org : null,
+    window: typeof payload.window === 'string' ? payload.window : '30d',
+    receipt_count: toFiniteNumber(payload.receipt_count, 0),
+    summary,
+    latest_receipts: Array.isArray(payload.latest_receipts) ? payload.latest_receipts : [],
+    all_receipts: Array.isArray(payload.all_receipts) ? payload.all_receipts : [],
+    material_mix: Array.isArray(payload.material_mix) ? payload.material_mix : [],
+    hotspots: Array.isArray(payload.hotspots) ? payload.hotspots : [],
+    export_links: isPlainObject(payload.export_links) ? payload.export_links : {},
   };
 }
 
@@ -172,32 +202,59 @@ export async function loadImpactData({
   apiClient = api,
   storage = globalThis?.localStorage,
   demoListings = DEMO_LISTINGS,
+  orgId = DEFAULT_DASHBOARD_ORG_ID,
+  window = '30d',
 } = {}) {
+  if (typeof apiClient.getOrgDashboard === 'function') {
+    const dashboardRes = await apiClient.getOrgDashboard(orgId, { window });
+
+    if (dashboardRes?.ok) {
+      const dashboard = normalizeOrgDashboardPayload(dashboardRes.data);
+      const stats = normalizeImpactPayload(dashboard?.summary);
+      if (!dashboard || !stats || isImpactEmpty(stats)) {
+        return { state: 'empty', source: 'live', stats: null, dashboard: null, error: null };
+      }
+      writeCache(storage, IMPACT_CACHE_KEY, stats);
+      return { state: 'live', source: 'live', stats, dashboard, error: null };
+    }
+
+    if (dashboardRes?.status === 0) {
+      const cachedStats = normalizeImpactPayload(readCache(storage, IMPACT_CACHE_KEY));
+      if (cachedStats && !isImpactEmpty(cachedStats)) {
+        return { state: 'offline', source: 'cache', stats: cachedStats, dashboard: null, error: null };
+      }
+
+      const demoStats = deriveImpactFromListings(demoListings);
+      return { state: 'offline', source: 'demo', stats: demoStats, dashboard: null, error: null };
+    }
+  }
+
   const res = await apiClient.getImpact();
 
   if (res?.ok) {
     const stats = normalizeImpactPayload(res.data);
     if (!stats || isImpactEmpty(stats)) {
-      return { state: 'empty', source: 'live', stats: null, error: null };
+      return { state: 'empty', source: 'live', stats: null, dashboard: null, error: null };
     }
     writeCache(storage, IMPACT_CACHE_KEY, stats);
-    return { state: 'live', source: 'live', stats, error: null };
+    return { state: 'live', source: 'live', stats, dashboard: null, error: null };
   }
 
   if (res?.status === 0) {
     const cachedStats = normalizeImpactPayload(readCache(storage, IMPACT_CACHE_KEY));
     if (cachedStats && !isImpactEmpty(cachedStats)) {
-      return { state: 'offline', source: 'cache', stats: cachedStats, error: null };
+      return { state: 'offline', source: 'cache', stats: cachedStats, dashboard: null, error: null };
     }
 
     const demoStats = deriveImpactFromListings(demoListings);
-    return { state: 'offline', source: 'demo', stats: demoStats, error: null };
+    return { state: 'offline', source: 'demo', stats: demoStats, dashboard: null, error: null };
   }
 
   return {
     state: 'error',
     source: null,
     stats: null,
+    dashboard: null,
     error: res?.error ?? 'Failed to load impact data',
     status: res?.status,
   };

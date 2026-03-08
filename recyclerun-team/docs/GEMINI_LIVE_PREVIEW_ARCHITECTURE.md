@@ -2,110 +2,227 @@
 
 ## Scope
 
-This document describes the live camera preview classification flow added for `PH5-SOHAM` on branch `codex/soham-gemini-live-preview-vision`.
+This document describes the current live preview implementation on branch `codex/native-compile-check`.
+It reflects the current code in:
 
-## Data Flow
+- [mobile/src/components/live/LiveScanPanel.js](../mobile/src/components/live/LiveScanPanel.js)
+- [mobile/src/hooks/useLiveVisionController.js](../mobile/src/hooks/useLiveVisionController.js)
+- [mobile/src/services/liveVisionTransport.js](../mobile/src/services/liveVisionTransport.js)
+- [backend/routes/live_vision.py](../backend/routes/live_vision.py)
+- [backend/services/live_control.py](../backend/services/live_control.py)
+
+## Architecture Summary
+
+The production-shaped path is no longer the original server-polled `CameraView -> /frame` loop.
+The current implementation is a hybrid architecture:
+
+1. Mobile development build uses native-capable camera plumbing and a local live vision pipeline.
+2. Backend mints a constrained Gemini Live auth token through `POST /api/live-vision/token`.
+3. Mobile opens the direct Gemini Live WebSocket using the returned token and server-provided setup payload.
+4. Mobile records telemetry through `POST /api/live-vision/telemetry/batch`.
+5. Mobile finalizes analytics with `POST /api/live-vision/session/end`.
+6. Legacy `session/start`, `session/<id>/frame`, `session/<id>/stop`, and `session/<id>/health` remain available as fallback/demo transport.
+
+## Current Mobile Data Flow
 
 ```text
-Mobile PostScreen (CameraView)
-  -> POST /api/live-vision/session/start
-     -> GeminiLiveService creates in-memory session
-  -> POST /api/live-vision/session/<id>/frame (cadenced)
-     -> request guards (base64, mime, byte size)
-     -> session guards (TTL, throttle, state)
-     -> Gemini upstream request (server-side GEMINI_API_KEY)
-     -> parse + normalize materials
-     -> response: gemini_live or gemini_live_demo
-  -> POST /api/live-vision/session/<id>/stop
-     -> idempotent session close
+PostScreen
+  -> LiveScanPanel
+     -> LiveCameraSurface.native (VisionCamera path)
+     -> useLiveVisionController
+        -> liveVisionNativePipeline.native
+           -> local tracking / candidate generation
+        -> mobile/src/services/api.js -> POST /api/live-vision/token
+           -> LiveTokenService -> Google auth token endpoint
+        -> liveVisionTransport
+           -> direct Gemini Live WebSocket
+        -> liveVisionTelemetry
+           -> POST /api/live-vision/telemetry/batch
+        -> confirmed suggestion rows
+           -> listing payload with capture_mode=live_ai,
+              source_session_id,
+              estimated_materials,
+              estimated_total_lbs,
+              estimated_confidence
 ```
 
-## Session Lifecycle
+## Backend Token Provisioning Contract
 
-Session states:
+### Public route
 
-- `starting`: internal creation phase.
-- `ready`: session accepts frame requests.
-- `closing`: stop in progress.
-- `closed`: session stopped/expired.
-- `failed`: reserved for future explicit fatal session errors.
+- `POST /api/live-vision/token`
 
-Session object fields:
+Request payload fields currently accepted:
 
-- `session_id`
-- `created_at`
-- `last_activity_at`
+- `model?: string`
+- `force_legacy?: boolean`
+- `profile_id?: string`
+- `device_label?: string`
+- `app_version?: string`
+- `platform?: string`
+- `device_tier?: string`
+- `network_type?: string`
+
+Primary success response fields:
+
+- `success: true`
+- `provider: "gemini_live"`
+- `token: string`
+- `token_expires_at: string`
+- `new_session_expires_at: string`
+- `ws_endpoint: string`
+- `model: string`
+- `response_modality: "TEXT"`
+- `media_resolution: "low"`
+- `session_policy: object`
+- `transport_version: "native_candidate_stream_v1"`
+- `supports_session_resumption: true`
+- `candidate_video_policy: object`
+- `fallback_order: ["direct_native_live", "tracking_only", "legacy_http_poll", "manual_entry"]`
+- `telemetry_session_id: string`
+- `source_session_id: string`
+- `legacy_fallback_available: true`
+- `setup: object`
+- `frame_turn_prompt: string`
+
+### Upstream Google token call
+
+The current upstream endpoint is:
+
+- `POST https://generativelanguage.googleapis.com/v1alpha/auth_tokens?key=<GEMINI_API_KEY>`
+
+Important implementation detail:
+
+The endpoint currently expects the `AuthToken` fields at the top level of the JSON body, not wrapped in `authToken` or `config`.
+
+Current working request body:
+
+```json
+{
+  "uses": 1,
+  "expireTime": "2026-03-08T22:52:35.504224Z",
+  "newSessionExpireTime": "2026-03-08T22:23:35.504530Z"
+}
+```
+
+Current observed response shape:
+
+```json
+{
+  "name": "auth_tokens/<opaque-token-id>"
+}
+```
+
+Because the upstream response currently returns only `name`, `LiveTokenService` preserves the locally computed expiry timestamps and exposes them as:
+
+- `token_expires_at`
+- `new_session_expires_at`
+
+This is intentional and should not be “simplified” away unless Google starts returning those fields again.
+
+## Session Setup Payload
+
+`LiveSessionPolicyService.session_setup()` currently returns:
+
 - `model`
-- `state`
-- `rolling_prediction_cache`
-- `timeout_seconds`
-- `frame_seq`
-- `source_mode` (`live` or `demo`)
+- `generationConfig.temperature`
+- `generationConfig.maxOutputTokens`
+- `generationConfig.responseModalities=["TEXT"]`
+- `systemInstruction`
+- `sessionResumption`
 
-TTL cleanup policy:
+This payload is returned to the mobile client and used for the direct Gemini Live connection.
 
-- Service prunes sessions after `GEMINI_LIVE_SESSION_TTL_SECONDS` inactivity/age threshold.
+## Fallback Ladder
 
-## Frame Cadence And Throttling
+The intended fallback order is:
 
-- Mobile frame loop runs at `EXPO_PUBLIC_LIVE_PREVIEW_FRAME_INTERVAL_MS` (default `1000` ms).
-- Backend enforces per-session minimum interval via `GEMINI_LIVE_MIN_FRAME_INTERVAL_MS`.
-- Fast submissions return structured `live_frame_rate_limited` errors (HTTP 429).
-- Max accepted frame bytes is enforced via `GEMINI_LIVE_MAX_FRAME_BYTES`.
-- Accepted MIME types: `image/jpeg`, `image/png`.
+1. `direct_native_live`
+2. `tracking_only`
+3. `legacy_http_poll`
+4. `manual_entry`
 
-## Manual Override Precedence
+Legacy force mode uses:
 
-Manual edits always win over AI suggestions:
+- `provider: "legacy_http_poll"`
+- `direct_available: false`
+- `supports_session_resumption: false`
+- `fallback_order: ["legacy_http_poll", "manual_entry"]`
 
-1. User manual add/edit/remove marks that material `type` as locked.
-2. Incoming AI suggestions for locked types are dropped.
-3. Submit payload excludes AI rows for locked types.
-4. User can explicitly reset locks using “Reset AI Suggestions”.
+## Telemetry and Persistence
 
-This prevents AI from re-overwriting manually corrected rows.
+Backend persistence currently records:
 
-## Failure Modes And Recovery
+- live vision session identity
+- provider and transport
+- model
+- token expiry metadata
+- device metadata
+- event batches
+- session completion counts and fallback mode
 
-### Structured HTTP failures
+Relevant server endpoints:
 
-All live endpoint failures use `backend/utils/http.py#error` envelope:
+- `POST /api/live-vision/telemetry/batch`
+- `POST /api/live-vision/session/end`
 
-- `success:false`
-- `error` + `code`
-- `message`
-- `errors/details` when applicable
+Telemetry batch fields currently include:
 
-### Fallback success mode
+- `telemetry_session_id`
+- `events[]`
+- `summary`
 
-For upstream timeout/request/parse failures:
+Each event may include:
 
-- `/frame` still returns `success:true`
-- `source:"gemini_live_demo"`
-- empty `materials`
-- deterministic fallback `notes`
-
-This keeps UI responsive while allowing manual materials entry.
-
-### No-key behavior
-
-When `GEMINI_API_KEY` is not configured:
-
-- session start succeeds in demo mode (`source_mode=gemini_live_demo`)
-- frame responses remain deterministic demo fallback payloads.
-
-## Logging And Telemetry
-
-Structured logs include:
-
-- `event`
-- `service` (`gemini_live`)
-- `session_id`
-- `stage` (`start`, `frame`, `parse`, `stop`)
+- `event_id`
+- `event_type`
+- `ts_ms`
 - `latency_ms`
-- `timeout`
+- `candidate_id`
+- `track_id`
 - `reason`
-- `model`
-- `state`
+- `details`
+- `platform`
+- `device_tier`
+- `network_type`
+- `device_model`
+- `os_version`
+- `transport_mode`
+- `preview_fps_p50`
+- `preview_fps_p95`
+- `detector_ms_p50`
+- `detector_ms_p95`
+- `stable_candidate_ms_p50`
+- `stable_candidate_ms_p95`
+- `gemini_rtt_ms_p50`
+- `gemini_rtt_ms_p95`
+- `resume_count`
+- `fallback_reason`
 
-No raw image/base64 frame data is logged.
+## Native Runtime Requirements
+
+The current live preview path requires a development build for actual native validation.
+
+Required toolchain state:
+
+- full Xcode installed and selected for `expo run:ios`
+- Android SDK, platform-tools, NDK, and CMake installed for `expo run:android`
+- `react-native-worklets`
+- `react-native-worklets-core`
+- `react-native-vision-camera`
+- Expo SDK-compatible `expo-dev-client`
+
+Relevant config files:
+
+- [mobile/package.json](../mobile/package.json)
+- [mobile/app.json](../mobile/app.json)
+- [mobile/babel.config.js](../mobile/babel.config.js)
+
+## Known Current Gaps
+
+These are still open after the token-route fix:
+
+1. Physical iOS validation is blocked until full Xcode is installed on the machine running `expo run:ios`.
+2. Physical Android runtime validation still requires a booted emulator or attached device even though the SDK/toolchain is now configured.
+3. The direct Gemini Live token route now works, but session resumption and direct transport reliability still need physical-device validation.
+4. The local native live pipeline boundary exists, but the true end-to-end smoothness claims still need device matrix benchmarking.

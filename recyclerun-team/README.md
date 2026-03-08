@@ -27,7 +27,7 @@
 
 ---
 
-## Quick Start (No API keys needed)
+## Quick Start
 
 ```bash
 # Terminal 1 — Backend
@@ -42,7 +42,7 @@ npm install
 npm run dev
 # → http://localhost:5173
 
-# Terminal 3 — Mobile (Expo Go)
+# Terminal 3 — Mobile (Expo Go / manual fallback)
 cd mobile
 npm install
 npm start
@@ -50,7 +50,19 @@ npm start
 ```
 `npm start` uses Expo tunnel for app bundle delivery (stable on restrictive Wi-Fi), with LAN API auto-config (`http://<LAN_IP>:5050/api`) handled by `prestart`.
 
+For native live preview validation and compile checks, use a development build instead of Expo Go:
+
+```bash
+# Terminal 4 — Mobile native dev build
+cd mobile
+npm run prebuild
+npm run ios:dev-client      # requires full Xcode
+npm run android:dev-client  # requires Android SDK + device/emulator
+npm run start:dev-client
+```
+
 For full sponsor integrations, copy `.env.example` to `.env` and add keys.
+Direct Gemini Live token provisioning requires `GEMINI_API_KEY`.
 
 For permanent mobile reliability (no LAN/tunnel dependency), deploy backend to a managed host and point mobile to production API:
 - See [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md).
@@ -93,6 +105,9 @@ Flask Backend
 | POST | `/api/classify` | Atharva | AMD vision classification |
 | POST | `/api/optimize-route` | Atharva | Build optimized driver route (supports `objective: "value"` or `"lbs"`) |
 | POST | `/api/accept-route` | Atharva | Accept + trigger ElevenLabs calls |
+| POST | `/api/live-vision/token` | Atharva | Provision Gemini Live constrained auth token for direct mobile WebSocket |
+| POST | `/api/live-vision/telemetry/batch` | Atharva | Persist live vision telemetry batches |
+| POST | `/api/live-vision/session/end` | Atharva | Finalize live vision session analytics |
 | GET | `/api/impact` | Atharva | Community stats |
 | GET | `/api/materials` | Atharva | Material rates |
 | GET | `/api/health` | Atharva | Health check |

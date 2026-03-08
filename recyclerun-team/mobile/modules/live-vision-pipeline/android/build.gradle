@@ -1,0 +1,23 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.livevisionpipeline'
+version = '0.7.9'
+
+android {
+  namespace "expo.modules.livevisionpipeline"
+  defaultConfig {
+    versionCode 1
+    versionName "0.7.9"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  implementation project(':react-native-vision-camera')
+  implementation 'com.google.mlkit:object-detection:17.0.2'
+}

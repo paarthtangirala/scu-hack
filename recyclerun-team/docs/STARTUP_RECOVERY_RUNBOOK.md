@@ -9,6 +9,7 @@ This runbook is the fastest way to get the demo stack healthy from zero and reco
 - Node deps installed in both `frontend/` and `mobile/`.
 - Render env vars configured for production API:
   - `AMD_API_KEY`
+  - `GEMINI_API_KEY`
   - `ELEVENLABS_API_KEY`
   - `TWILIO_ACCOUNT_SID`
   - `TWILIO_AUTH_TOKEN`
@@ -32,9 +33,27 @@ npm run dev
 ```
 
 ```bash
-# Terminal 3: mobile
+# Terminal 3: mobile bundle
 cd ../mobile
 npm start
+```
+
+For native live preview validation instead of Expo Go:
+
+```bash
+cd mobile
+FORCE_LAN_PROFILE=1 ../scripts/mobile/use-lan-api.sh
+npm run prebuild
+npm run start:dev-client
+```
+
+Then install on platform:
+
+```bash
+cd mobile
+npm run ios:dev-client
+# or
+npm run android:dev-client
 ```
 
 ## 2) Health Verification (Manual)
@@ -46,11 +65,15 @@ curl -s http://127.0.0.1:5050/api/health
 curl -s http://127.0.0.1:5050/api/materials
 curl -s http://127.0.0.1:5050/api/listings
 curl -s http://127.0.0.1:5050/api/impact
+curl -s -X POST http://127.0.0.1:5050/api/live-vision/token \
+  -H 'Content-Type: application/json' \
+  -d '{"platform":"ios","device_tier":"mid","network_type":"wifi"}'
 ```
 
 Expected:
 - HTTP `200` for all endpoints.
 - `/api/health` returns `{"status":"ok",...}`.
+- `/api/live-vision/token` returns HTTP `201` with `provider:"gemini_live"` when `GEMINI_API_KEY` is configured.
 
 ### Hosted API (Render)
 
@@ -124,6 +147,14 @@ Regenerate API env and restart Expo:
 ./scripts/mobile/use-lan-api.sh
 cd mobile
 npm start
+```
+
+For native dev-client validation:
+
+```bash
+FORCE_LAN_PROFILE=1 ./scripts/mobile/use-lan-api.sh
+cd mobile
+npm run start:dev-client
 ```
 
 For production profile:

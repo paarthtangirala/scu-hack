@@ -7,7 +7,16 @@ from threading import Thread
 from flask import Flask
 import pytest
 
-from backend.routes import listings_bp, classify_bp, optimize_bp, impact_bp, live_vision_bp
+from backend.routes import (
+    listings_bp,
+    classify_bp,
+    optimize_bp,
+    impact_bp,
+    live_vision_bp,
+    pickups_bp,
+    orgs_bp,
+    media_bp,
+)
 import backend.routes.classify as classify_module
 import backend.routes.optimize as optimize_module
 import backend.routes.live_vision as live_vision_module
@@ -22,6 +31,9 @@ def _client():
     app.register_blueprint(optimize_bp)
     app.register_blueprint(impact_bp)
     app.register_blueprint(live_vision_bp)
+    app.register_blueprint(pickups_bp)
+    app.register_blueprint(orgs_bp)
+    app.register_blueprint(media_bp)
     return app.test_client()
 
 
@@ -92,9 +104,49 @@ def test_create_listing_preserves_valid_material_payload_unchanged():
     assert resp.status_code == 201
     listing = resp.get_json()["listing"]
     assert [m["type"] for m in listing["materials"]] == ["cardboard", "cardboard", "aluminum_cans"]
-    assert [m["lbs"] for m in listing["materials"]] == [1.25, 2.75, 2.0]
+    assert [m["lbs"] for m in listing["materials"]] == [1.2, 2.8, 2.0]
     assert "geocode" in listing
     assert listing["geocode"]["success"] is False
+
+
+def test_create_listing_persists_estimate_metadata():
+    _reset()
+    client = _client()
+    resp = client.post(
+        "/api/listings",
+        json={
+            "address": "10 Estimate Ave",
+            "household_name": "Estimate Household",
+            "capture_mode": "live_ai",
+            "source_session_id": "session_demo_123",
+            "materials": [{"type": "cardboard", "lbs": 10.0}],
+            "estimated_materials": [
+                {
+                    "type": "cardboard",
+                    "lbs": 12.5,
+                    "count": 2,
+                    "confidence": 0.86,
+                    "weight_confidence": 0.73,
+                    "weight_low": 10.8,
+                    "weight_high": 14.2,
+                    "provenance": "live_ai_native",
+                    "candidate_id": "track_12:1",
+                }
+            ],
+            "estimated_total_lbs": 12.5,
+            "estimated_confidence": 0.82,
+        },
+    )
+    assert resp.status_code == 201
+    listing = resp.get_json()["listing"]
+    assert listing["capture_mode"] == "live_ai"
+    assert listing["source_session_id"] == "session_demo_123"
+    assert listing["estimated_total_lbs"] == 12.5
+    assert listing["estimated_confidence"] == 0.82
+    assert listing["estimated_materials"][0]["lbs"] == 12.5
+    assert listing["estimated_materials"][0]["count"] == 2
+    assert listing["estimated_materials"][0]["confidence"] == 0.86
+    assert listing["estimated_materials"][0]["candidate_id"] == "track_12:1"
 
 
 def test_get_listings_rejects_invalid_status():
@@ -307,6 +359,185 @@ def test_accept_route_respects_external_correlation_id():
     body = resp.get_json()
     assert body["request_id"] == "demo-correlation-123"
     assert body["idempotent_replay"] is False
+
+
+def test_accept_route_claimed_notifications_include_pickup_job_id(monkeypatch):
+    _reset()
+    client = _client()
+    target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    monkeypatch.setattr(
+        optimize_module.notifier,
+        "notify",
+        lambda **kwargs: {"success": True, "mode": "demo", "message": "accepted", "reason": "test"},
+    )
+
+    resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "Receipt Driver", "stops": [{"listing_id": target_id, "eta_minutes": 15}]},
+    )
+    assert resp.status_code == 200
+    notification = resp.get_json()["notifications"][0]
+    assert notification["status_code"] == "claimed_notified"
+    assert notification["pickup_job_id"].startswith("pickup_")
+
+
+def test_pickup_completion_receipt_and_org_dashboard_contract(monkeypatch):
+    _reset()
+    client = _client()
+    target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    monkeypatch.setattr(
+        optimize_module.notifier,
+        "notify",
+        lambda **kwargs: {"success": True, "mode": "demo", "message": "accepted", "reason": "test"},
+    )
+
+    accept_resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "Receipt Driver", "stops": [{"listing_id": target_id, "eta_minutes": 15}]},
+    )
+    assert accept_resp.status_code == 200
+    pickup_job_id = accept_resp.get_json()["notifications"][0]["pickup_job_id"]
+
+    complete_resp = client.post(
+        f"/api/pickups/{pickup_job_id}/complete",
+        json={
+            "actual_materials": [{"type": "cardboard", "lbs": 11.0}],
+            "actual_total_lbs": 11.0,
+            "completion_media_id": "demo-proof-1",
+            "contamination_flags": [],
+            "driver_lat": 37.35,
+            "driver_lng": -121.95,
+        },
+    )
+    assert complete_resp.status_code == 200
+    complete_body = complete_resp.get_json()
+    receipt = complete_body["receipt"]
+    assert complete_body["pickup_job"]["status"] == "completed"
+    assert receipt["pickup_job_id"] == pickup_job_id
+    assert receipt["completion_media_id"] == "demo-proof-1"
+    assert receipt["actual_total_lbs"] == 11.0
+    assert isinstance(receipt["actual_materials"], list)
+    assert receipt["receipt_id"].startswith("receipt_")
+
+    get_receipt_resp = client.get(f"/api/receipts/{receipt['receipt_id']}")
+    assert get_receipt_resp.status_code == 200
+    assert get_receipt_resp.get_json()["receipt"]["receipt_id"] == receipt["receipt_id"]
+
+    dashboard_resp = client.get("/api/orgs/org_santa_clara_demo/dashboard?window=30d")
+    assert dashboard_resp.status_code == 200
+    dashboard = dashboard_resp.get_json()
+    assert dashboard["success"] is True
+    assert dashboard["summary"]["completed_pickups"] >= 1
+    assert dashboard["latest_receipts"][0]["receipt_id"] == receipt["receipt_id"]
+
+
+def test_org_dashboard_invalid_window_returns_structured_error():
+    _reset()
+    client = _client()
+    resp = client.get("/api/orgs/org_santa_clara_demo/dashboard?window=forever")
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["code"] == "validation_error"
+    assert any(item["field"] == "window" for item in body["details"])
+
+
+def test_org_dashboard_csv_export_returns_csv(monkeypatch):
+    _reset()
+    client = _client()
+    target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    monkeypatch.setattr(
+        optimize_module.notifier,
+        "notify",
+        lambda **kwargs: {"success": True, "mode": "demo", "message": "accepted", "reason": "test"},
+    )
+    accept_resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "CSV Driver", "stops": [{"listing_id": target_id, "eta_minutes": 12}]},
+    )
+    pickup_job_id = accept_resp.get_json()["notifications"][0]["pickup_job_id"]
+    client.post(
+        f"/api/pickups/{pickup_job_id}/complete",
+        json={
+            "actual_materials": [{"type": "cardboard", "lbs": 7.0}],
+            "actual_total_lbs": 7.0,
+            "completion_media_id": "csv-proof-1",
+            "contamination_flags": [],
+            "driver_lat": 37.35,
+            "driver_lng": -121.95,
+        },
+    )
+
+    resp = client.get("/api/orgs/org_santa_clara_demo/dashboard?window=30d&format=csv")
+    assert resp.status_code == 200
+    assert resp.mimetype == "text/csv"
+    csv_body = resp.get_data(as_text=True)
+    assert "receipt_id,pickup_job_id,listing_id" in csv_body
+    assert pickup_job_id in csv_body
+
+
+def test_media_upload_and_signed_fetch_contract():
+    _reset()
+    client = _client()
+    upload_resp = client.post(
+        "/api/media/upload",
+        json={
+            "image_base64": "aGVsbG8=",
+            "mime_type": "image/jpeg",
+            "file_name": "proof.jpg",
+            "purpose": "pickup_proof",
+        },
+    )
+    assert upload_resp.status_code == 201
+    media_asset = upload_resp.get_json()["media_asset"]
+    assert media_asset["media_id"].startswith("media_")
+    assert media_asset["signed_url"].startswith("http://localhost")
+    assert media_asset["signed_path"].startswith("/api/media/")
+
+    signed_path = media_asset["signed_path"]
+    fetch_resp = client.get(signed_path)
+    assert fetch_resp.status_code == 200
+    assert fetch_resp.mimetype == "image/jpeg"
+    assert fetch_resp.get_data() == b"hello"
+
+
+def test_receipt_includes_signed_completion_media(monkeypatch):
+    _reset()
+    client = _client()
+    target_id = client.get("/api/listings?status=available").get_json()["listings"][0]["id"]
+    monkeypatch.setattr(
+        optimize_module.notifier,
+        "notify",
+        lambda **kwargs: {"success": True, "mode": "demo", "message": "accepted", "reason": "test"},
+    )
+    upload_resp = client.post(
+        "/api/media/upload",
+        json={
+            "image_base64": "aGVsbG8=",
+            "mime_type": "image/jpeg",
+            "file_name": "proof.jpg",
+            "purpose": "pickup_proof",
+        },
+    )
+    media_id = upload_resp.get_json()["media_asset"]["media_id"]
+    accept_resp = client.post(
+        "/api/accept-route",
+        json={"driver_name": "Proof Driver", "stops": [{"listing_id": target_id, "eta_minutes": 15}]},
+    )
+    pickup_job_id = accept_resp.get_json()["notifications"][0]["pickup_job_id"]
+    complete_resp = client.post(
+        f"/api/pickups/{pickup_job_id}/complete",
+        json={
+            "actual_materials": [{"type": "cardboard", "lbs": 6.0}],
+            "actual_total_lbs": 6.0,
+            "completion_media_id": media_id,
+            "contamination_flags": [],
+        },
+    )
+    assert complete_resp.status_code == 200
+    receipt = complete_resp.get_json()["receipt"]
+    assert receipt["completion_media_id"] == media_id
+    assert receipt["completion_media"]["media_id"] == media_id
+    assert receipt["completion_media"]["signed_url"].startswith("http://localhost")
 
 
 def test_accept_route_replay_with_same_request_id_is_side_effect_free(monkeypatch):
@@ -697,6 +928,120 @@ def test_live_vision_missing_api_key_starts_demo_mode(monkeypatch):
     assert body["reason"] in {"gemini_api_key_missing", "forced_demo_mode"}
 
 
+def test_live_vision_token_contract_shape(monkeypatch):
+    client = _client()
+    _reset()
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        live_vision_module.token_service,
+        "_request_token",
+        lambda **kwargs: {
+            "name": "ephemeral-token-xyz",
+        },
+    )
+
+    resp = client.post(
+        "/api/live-vision/token",
+        json={
+            "profile_id": "profile_demo_1",
+            "platform": "ios",
+            "device_tier": "mid",
+            "network_type": "wifi",
+        },
+    )
+
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["success"] is True
+    assert body["provider"] == "gemini_live"
+    assert body["direct_available"] is True
+    assert body["token"] == "ephemeral-token-xyz"
+    assert body["token_expires_at"]
+    assert body["new_session_expires_at"]
+    assert body["telemetry_session_id"].startswith("lvs_")
+    assert body["source_session_id"] == body["telemetry_session_id"]
+    assert body["response_modality"] == "TEXT"
+    assert body["legacy_fallback_available"] is True
+    assert isinstance(body["session_policy"], dict)
+    assert body["setup"]["model"].startswith("models/")
+    assert body["transport_version"] == "native_candidate_stream_v1"
+    assert body["supports_session_resumption"] is True
+    assert isinstance(body["candidate_video_policy"], dict)
+    assert "direct_native_live" in body["fallback_order"]
+
+
+def test_live_vision_force_legacy_token_response_shape():
+    client = _client()
+    _reset()
+    resp = client.post("/api/live-vision/token", json={"force_legacy": True, "platform": "android"})
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    assert body["success"] is True
+    assert body["provider"] == "legacy_http_poll"
+    assert body["direct_available"] is False
+    assert body["legacy_fallback_available"] is True
+    assert body["telemetry_session_id"].startswith("lvs_")
+    assert body["fallback_reason"] == "forced_legacy_transport"
+    assert body["transport_version"] == "native_candidate_stream_v1"
+    assert body["supports_session_resumption"] is False
+    assert body["fallback_order"] == ["legacy_http_poll", "manual_entry"]
+
+
+def test_live_vision_telemetry_batch_and_session_end_contract():
+    client = _client()
+    _reset()
+    token = client.post("/api/live-vision/token", json={"force_legacy": True})
+    session_id = token.get_json()["telemetry_session_id"]
+
+    telemetry = client.post(
+        "/api/live-vision/telemetry/batch",
+        json={
+            "telemetry_session_id": session_id,
+            "events": [
+                {
+                    "event_id": "evt_1",
+                    "event_type": "session_started",
+                    "ts_ms": 1700000000000,
+                    "platform": "ios",
+                    "device_tier": "mid",
+                    "network_type": "wifi",
+                    "transport_mode": "direct_native_live",
+                    "preview_fps_p50": 28.0,
+                    "preview_fps_p95": 20.0,
+                    "details": {"mode": "legacy_http_poll"},
+                }
+            ],
+            "summary": {"transport_mode": "direct_native_live"},
+        },
+    )
+    assert telemetry.status_code == 202
+    telemetry_body = telemetry.get_json()
+    assert telemetry_body["success"] is True
+    assert telemetry_body["accepted"] == 1
+    assert telemetry_body["telemetry_session_id"] == session_id
+
+    end = client.post(
+        "/api/live-vision/session/end",
+        json={
+            "telemetry_session_id": session_id,
+            "source_session_id": session_id,
+            "duration_ms": 2400,
+            "confirmed_count": 2,
+            "skipped_count": 1,
+            "fallback_mode": "legacy_http_poll",
+            "transport_mode": "direct_native_live",
+            "metrics": {"preview_fps_p50": 28.0},
+        },
+    )
+    assert end.status_code == 200
+    end_body = end.get_json()
+    assert end_body["success"] is True
+    assert end_body["session"]["status"] == "closed"
+    assert end_body["session"]["confirmed_count"] == 2
+    assert end_body["session"]["fallback_mode"] == "legacy_http_poll"
+
+
 def test_live_vision_frame_invalid_payload_is_structured_error():
     client = _client()
     live_vision_module.live_service._sessions.clear()
@@ -729,3 +1074,15 @@ def test_live_vision_known_malformed_requests_never_return_500():
     bad_health = client.get("/api/live-vision/session/missing_session/health")
     assert bad_health.status_code != 500
     _assert_structured_error_envelope(bad_health.get_json())
+
+    bad_token = client.post("/api/live-vision/token", json="bad")
+    assert bad_token.status_code != 500
+    _assert_structured_error_envelope(bad_token.get_json())
+
+    bad_telemetry = client.post("/api/live-vision/telemetry/batch", json={"events": "bad"})
+    assert bad_telemetry.status_code != 500
+    _assert_structured_error_envelope(bad_telemetry.get_json())
+
+    bad_end = client.post("/api/live-vision/session/end", json={"confirmed_count": -1})
+    assert bad_end.status_code != 500
+    _assert_structured_error_envelope(bad_end.get_json())

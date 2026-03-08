@@ -45,6 +45,7 @@ def _build_stop_result(
     retryable: bool,
     success: bool,
     notification: Dict,
+    pickup_job_id: str | None = None,
     household: str | None = None,
     phone: str | None = None,
     attempts: int = 0,
@@ -56,6 +57,8 @@ def _build_stop_result(
         "attempts": attempts,
         "notification": notification,
     }
+    if pickup_job_id is not None:
+        result["pickup_job_id"] = pickup_job_id
     if household is not None:
         result["household"] = household
     if phone is not None:
@@ -181,6 +184,12 @@ def accept_route():
                 continue
 
             claimed_count += 1
+            pickup_job = store.create_pickup_job(
+                listing_id=lid,
+                driver_name=driver_name,
+                eta_minutes=eta,
+                request_id=request_id,
+            )
             result, attempts_used = _notify_with_retry(
                 phone=listing.phone,
                 household_name=listing.household_name,
@@ -195,6 +204,7 @@ def accept_route():
                     status_code=status_code,
                     retryable=not result.get("success", False),
                     success=bool(result.get("success")),
+                    pickup_job_id=pickup_job.get("pickup_job_id"),
                     household=listing.household_name,
                     phone=listing.phone,
                     attempts=attempts_used,

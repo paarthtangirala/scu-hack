@@ -37,6 +37,24 @@ async function request(path, options = {}) {
   }
 }
 
+async function requestText(path, options = {}) {
+  let res;
+  try {
+    res = await fetch(BASE + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    });
+  } catch (err) {
+    return { ok: false, error: err.message ?? 'Network error', status: 0 };
+  }
+
+  const text = await res.text();
+  if (!res.ok) {
+    return { ok: false, error: text || `HTTP ${res.status}`, status: res.status };
+  }
+  return { ok: true, data: text };
+}
+
 export const api = {
   // Listings
   getListings: (status = 'available') =>
@@ -50,6 +68,25 @@ export const api = {
 
   resetDemo: () =>
     request('/listings/reset-demo', { method: 'POST' }),
+
+  completePickupJob: (pickupId, payload) =>
+    request(`/pickups/${encodeURIComponent(pickupId)}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getReceipt: (receiptId) =>
+    request(`/receipts/${encodeURIComponent(receiptId)}`),
+
+  getOrgDashboard: (orgId, { window = '30d', format = 'json' } = {}) =>
+    request(
+      `/orgs/${encodeURIComponent(orgId)}/dashboard?window=${encodeURIComponent(window)}&format=${encodeURIComponent(format)}`
+    ),
+
+  downloadOrgDashboardCsv: (orgId, { window = '30d' } = {}) =>
+    requestText(
+      `/orgs/${encodeURIComponent(orgId)}/dashboard?window=${encodeURIComponent(window)}&format=csv`
+    ),
 
   // Classification
   classifyImage: (base64) =>

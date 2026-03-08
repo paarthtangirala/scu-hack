@@ -166,6 +166,18 @@ export const api = {
   resetDemo: () => request("/listings/reset-demo", { method: "POST" }),
   completeListing: (listingId) =>
     request(`/listings/${listingId}/complete`, { method: "POST" }),
+  uploadMediaAsset: (payload) =>
+    request("/media/upload", { method: "POST", body: JSON.stringify(payload) }),
+  completePickupJob: (pickupId, payload) =>
+    request(`/pickups/${encodeURIComponent(pickupId)}/complete`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getReceipt: (receiptId) => request(`/receipts/${encodeURIComponent(receiptId)}`),
+  getOrgDashboard: (orgId, { window = "30d", format = "json" } = {}) =>
+    request(
+      `/orgs/${encodeURIComponent(orgId)}/dashboard?window=${encodeURIComponent(window)}&format=${encodeURIComponent(format)}`,
+    ),
   classifyImage: (base64Image) =>
     request("/classify", {
       method: "POST",
@@ -176,8 +188,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  getLiveVisionToken: (payload = {}) =>
+    request("/live-vision/token", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   sendLiveVisionFrame: (sessionId, payload) =>
     request(`/live-vision/session/${sessionId}/frame`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  sendLiveVisionTelemetryBatch: (payload) =>
+    request("/live-vision/telemetry/batch", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -185,6 +207,11 @@ export const api = {
     request(`/live-vision/session/${sessionId}/stop`, {
       method: "POST",
       body: JSON.stringify({}),
+    }),
+  endLiveVisionSession: (payload) =>
+    request("/live-vision/session/end", {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
   getLiveVisionSessionHealth: (sessionId) =>
     request(`/live-vision/session/${sessionId}/health`),

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -11,6 +12,8 @@ import {
   View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
 import { api } from "../services/api";
 import { GOOGLE_MAPS_API_KEY } from "../config";
 import { Card, PrimaryButton, SectionKicker, SecondaryButton, StatPill, colors } from "../components/ui";
@@ -38,6 +41,7 @@ const GOOGLE_DIRECTIONS_BASE_URL = "https://maps.googleapis.com/maps/api/directi
 const GOOGLE_DIRECTIONS_MAX_STOPS = 23;
 const EXTERNAL_NAV_MAX_STOPS = 10;
 const PLACEHOLDER_COLOR = "rgba(120, 145, 122, 0.8)";
+const DEMO_LOCATION_STATUS = "Using demo hub location";
 
 function nextRequestId() {
   return `mobile-accept-${Date.now()}`;
@@ -55,8 +59,24 @@ function stopCoordinate(stop) {
   return { latitude: lat, longitude: lng };
 }
 
-function fallbackRouteCoordinates(stops) {
-  const unique = [{ ...DRIVER_START }];
+function normalizeMaterialRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      type: String(row?.type || "").trim(),
+      lbs: Number(row?.lbs || row?.weight_lbs || 0),
+    }))
+    .filter((row) => row.type && Number.isFinite(row.lbs) && row.lbs > 0)
+    .map((row) => ({ ...row, lbs: Math.round(row.lbs * 10) / 10 }));
+}
+
+function sumMaterialLbs(rows) {
+  return Math.round(
+    normalizeMaterialRows(rows).reduce((sum, row) => sum + Number(row.lbs || 0), 0) * 10,
+  ) / 10;
+}
+
+function fallbackRouteCoordinates(stops, driverStart = DRIVER_START) {
+  const unique = [{ ...driverStart }];
   stops.forEach((point) => {
     const prev = unique[unique.length - 1];
     if (!prev || prev.latitude !== point.latitude || prev.longitude !== point.longitude) {
@@ -122,7 +142,7 @@ function computeRouteRegion(points) {
   };
 }
 
-function buildExternalNavigationUrl(stops) {
+function buildExternalNavigationUrl(stops, driverStart = DRIVER_START) {
   const navStops = (stops || [])
     .map(stopCoordinate)
     .filter(Boolean)
@@ -134,7 +154,7 @@ function buildExternalNavigationUrl(stops) {
     return `http://maps.apple.com/?saddr=Current%20Location&daddr=${encodeURIComponent(daddr)}&dirflg=d`;
   }
 
-  const origin = `${DRIVER_START.latitude},${DRIVER_START.longitude}`;
+  const origin = `${driverStart.latitude},${driverStart.longitude}`;
   const destination = navStops[navStops.length - 1];
   const waypoints = navStops
     .slice(0, navStops.length - 1)
@@ -150,6 +170,78 @@ function buildExternalNavigationUrl(stops) {
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+async function getDriverLocation() {
+  try {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== "granted") {
+      return {
+        ok: false,
+        latitude: DRIVER_START.latitude,
+        longitude: DRIVER_START.longitude,
+        accuracyMeters: null,
+        message: "Location permission denied. Using demo hub location.",
+      };
+    }
+
+    const position = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+    });
+    const latitude = Number(position?.coords?.latitude);
+    const longitude = Number(position?.coords?.longitude);
+    const accuracyMeters = Number(position?.coords?.accuracy ?? 0);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return {
+        ok: false,
+        latitude: DRIVER_START.latitude,
+        longitude: DRIVER_START.longitude,
+        accuracyMeters: null,
+        message: "Driver GPS was invalid. Using demo hub location.",
+      };
+    }
+
+    return {
+      ok: true,
+      latitude,
+      longitude,
+      accuracyMeters: Number.isFinite(accuracyMeters) ? accuracyMeters : null,
+      message: "",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      latitude: DRIVER_START.latitude,
+      longitude: DRIVER_START.longitude,
+      accuracyMeters: null,
+      message: `GPS lookup failed: ${error?.message || "unknown error"}. Using demo hub location.`,
+    };
+  }
+}
+
+async function captureProofPhoto() {
+  const permission = await ImagePicker.requestCameraPermissionsAsync();
+  if (permission.status !== "granted") {
+    return { ok: false, message: "Camera permission denied. Cannot capture proof photo." };
+  }
+
+  const result = await ImagePicker.launchCameraAsync({
+    allowsEditing: false,
+    base64: true,
+    quality: 0.45,
+  });
+  if (result.canceled) {
+    return { ok: false, message: "Proof capture cancelled." };
+  }
+
+  const asset = result.assets?.[0];
+  if (!asset?.uri) {
+    return { ok: false, message: "Camera did not return a photo URI." };
+  }
+  if (!asset?.base64) {
+    return { ok: false, message: "Camera did not return base64 photo data." };
+  }
+  return { ok: true, asset };
+}
+
 export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsumed = () => {} }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -162,10 +254,15 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
   const [route, setRoute] = useState(null);
   const [accepted, setAccepted] = useState(false);
   const [completedIds, setCompletedIds] = useState({});
+  const [pickupJobsByListingId, setPickupJobsByListingId] = useState({});
   const [collectedLbs, setCollectedLbs] = useState(0);
   const [earnedValue, setEarnedValue] = useState(0);
+  const [recentReceipts, setRecentReceipts] = useState([]);
+  const [proofCapturingStopId, setProofCapturingStopId] = useState("");
   const [routePolyline, setRoutePolyline] = useState([]);
   const [routeMapMessage, setRouteMapMessage] = useState("");
+  const [driverLocation, setDriverLocation] = useState(DRIVER_START);
+  const [locationStatusText, setLocationStatusText] = useState(DEMO_LOCATION_STATUS);
 
   const loadListings = useCallback(async () => {
     const response = await api.getListings("available");
@@ -186,6 +283,27 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
     loadListings();
   }, [loadListings]);
 
+  const refreshDriverLocation = useCallback(async () => {
+    setLocationStatusText("Locating driver...");
+    const location = await getDriverLocation();
+    const next = {
+      latitude: Number(location.latitude || DRIVER_START.latitude),
+      longitude: Number(location.longitude || DRIVER_START.longitude),
+    };
+    setDriverLocation(next);
+    if (location.ok) {
+      const accuracy = Number.isFinite(location.accuracyMeters) ? ` (±${Math.round(location.accuracyMeters)}m)` : "";
+      setLocationStatusText(`Live GPS locked${accuracy}`);
+    } else {
+      setLocationStatusText(location.message || DEMO_LOCATION_STATUS);
+    }
+    return location;
+  }, []);
+
+  useEffect(() => {
+    void refreshDriverLocation();
+  }, [refreshDriverLocation]);
+
   const hydrateRouteMap = useCallback(async (stops) => {
     const coordinates = (stops || []).map(stopCoordinate).filter(Boolean);
     if (!coordinates.length) {
@@ -196,7 +314,7 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
 
     const limitedCoordinates = coordinates.slice(0, GOOGLE_DIRECTIONS_MAX_STOPS);
     const truncated = coordinates.length > GOOGLE_DIRECTIONS_MAX_STOPS;
-    const fallbackCoordinates = fallbackRouteCoordinates(limitedCoordinates);
+    const fallbackCoordinates = fallbackRouteCoordinates(limitedCoordinates, driverLocation);
 
     if (!GOOGLE_MAPS_API_KEY) {
       setRoutePolyline(fallbackCoordinates);
@@ -211,7 +329,7 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
         .map((point) => `${point.latitude},${point.longitude}`);
 
       const params = new URLSearchParams({
-        origin: `${DRIVER_START.latitude},${DRIVER_START.longitude}`,
+        origin: `${driverLocation.latitude},${driverLocation.longitude}`,
         destination: `${destination.latitude},${destination.longitude}`,
         mode: "driving",
         key: GOOGLE_MAPS_API_KEY,
@@ -246,16 +364,17 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
       setRouteMapMessage(
         `Failed to load Google Directions (${error?.message || "network error"}). Showing straight-line preview.` +
           (truncated ? " Showing first 23 stops only." : ""),
-      );
+        );
     }
-  }, []);
+  }, [driverLocation]);
 
   const buildRoute = async () => {
     setLoading(true);
     setMessage("");
+    const liveLocation = await refreshDriverLocation();
     const response = await api.optimizeRoute({
-      lat: 37.3541,
-      lng: -121.9552,
+      lat: liveLocation?.latitude || driverLocation.latitude,
+      lng: liveLocation?.longitude || driverLocation.longitude,
       maxMinutes,
       truckCapacity: capacity,
       objective,
@@ -270,8 +389,10 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
     hydrateRouteMap(response.data?.stops || []);
     setAccepted(false);
     setCompletedIds({});
+    setPickupJobsByListingId({});
     setCollectedLbs(0);
     setEarnedValue(0);
+    setRecentReceipts([]);
 
     if (priorityListingIds.length) {
       const included = new Set(
@@ -309,6 +430,15 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
     }
     setAccepted(true);
     const notifications = response.data?.notifications || [];
+    const pickupJobs = notifications.reduce((acc, item) => {
+      const listingId = String(item?.listing_id || "");
+      const pickupJobId = String(item?.pickup_job_id || "");
+      if (listingId && pickupJobId) {
+        acc[listingId] = pickupJobId;
+      }
+      return acc;
+    }, {});
+    setPickupJobsByListingId(pickupJobs);
     const claimed = Number(response.data?.claimed_count || 0);
     const sent = Number(
       response.data?.notifications_sent ??
@@ -332,17 +462,72 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
 
   const completeStop = async (stop) => {
     const listingId = stop.listing_id || stop.id;
-    if (completedIds[listingId]) {
+    if (completedIds[listingId] || proofCapturingStopId === listingId) {
       return;
     }
-    const response = await api.completeListing(listingId);
+    setProofCapturingStopId(listingId);
+    const pickupJobId = pickupJobsByListingId[listingId];
+    const actualMaterials = normalizeMaterialRows(
+      stop?.materials || stop?.estimated_materials || [{ type: "cardboard", lbs: Number(stop?.total_lbs || 0) }],
+    );
+    const actualTotalLbs = sumMaterialLbs(actualMaterials) || Number(stop?.total_lbs || 0);
+    const photoResult = await captureProofPhoto();
+    if (!photoResult.ok) {
+      setProofCapturingStopId("");
+      setMessage(photoResult.message);
+      return;
+    }
+    const uploadResult = await api.uploadMediaAsset({
+      image_base64: photoResult.asset.base64,
+      mime_type: photoResult.asset.mimeType || "image/jpeg",
+      file_name: `pickup-proof-${listingId}.${String(photoResult.asset.mimeType || "image/jpeg").includes("png") ? "png" : "jpg"}`,
+      purpose: "pickup_proof",
+    });
+    if (!uploadResult.ok) {
+      setProofCapturingStopId("");
+      setMessage(formatApiFailure("Upload proof photo", uploadResult));
+      return;
+    }
+    const mediaAsset = uploadResult.data?.media_asset || null;
+    if (!mediaAsset?.media_id) {
+      setProofCapturingStopId("");
+      setMessage("Proof upload did not return media metadata.");
+      return;
+    }
+    const gpsResult = await refreshDriverLocation();
+    const response = pickupJobId
+      ? await api.completePickupJob(pickupJobId, {
+          actual_materials: actualMaterials,
+          actual_total_lbs: actualTotalLbs,
+          contamination_flags: [],
+          completion_media_id: mediaAsset.media_id,
+          driver_lat: gpsResult?.latitude || driverLocation.latitude,
+          driver_lng: gpsResult?.longitude || driverLocation.longitude,
+        })
+      : await api.completeListing(listingId);
     if (!response.ok) {
+      setProofCapturingStopId("");
       setMessage(formatApiFailure("Complete stop", response));
       return;
     }
+
+    const receipt = response.data?.receipt || null;
     setCompletedIds((prev) => ({ ...prev, [listingId]: true }));
-    setCollectedLbs((prev) => prev + Number(stop.total_lbs || 0));
-    setEarnedValue((prev) => prev + Number(stop.total_value || 0));
+    setCollectedLbs((prev) => prev + Number(receipt?.actual_total_lbs || stop.total_lbs || 0));
+    setEarnedValue((prev) => prev + Number(receipt?.actual_total_value || stop.total_value || 0));
+    if (receipt) {
+      const enrichedReceipt = {
+        ...receipt,
+        proof_photo_uri: receipt?.completion_media?.signed_url || photoResult.asset?.uri || "",
+        completion_media: receipt?.completion_media || mediaAsset,
+        proof_geo_accuracy_meters: gpsResult?.accuracyMeters ?? null,
+        proof_driver_lat: gpsResult?.latitude || driverLocation.latitude,
+        proof_driver_lng: gpsResult?.longitude || driverLocation.longitude,
+      };
+      setRecentReceipts((prev) => [enrichedReceipt, ...prev.filter((item) => item?.receipt_id !== receipt.receipt_id)].slice(0, 3));
+      setMessage(`Stop completed. Diversion receipt ${receipt.receipt_id} generated.`);
+    }
+    setProofCapturingStopId("");
   };
 
   const routeSummary = route?.summary || {};
@@ -353,13 +538,13 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
   );
   const mapTitle = Platform.OS === "ios" ? "Route Map (Apple basemap + Google Directions)" : "Route Map (Google Maps)";
   const mapCoordinates = useMemo(
-    () => (routePolyline.length ? routePolyline : fallbackRouteCoordinates(routeStopCoordinates)),
-    [routePolyline, routeStopCoordinates],
+    () => (routePolyline.length ? routePolyline : fallbackRouteCoordinates(routeStopCoordinates, driverLocation)),
+    [driverLocation, routePolyline, routeStopCoordinates],
   );
   const mapRegion = useMemo(() => computeRouteRegion(mapCoordinates), [mapCoordinates]);
   const availableCount = useMemo(() => listings.filter((item) => item.status === "available").length, [listings]);
   const openExternalNavigation = useCallback(async () => {
-    const url = buildExternalNavigationUrl(routeStops);
+    const url = buildExternalNavigationUrl(routeStops, driverLocation);
     if (!url) {
       setMessage("Build a route first to open turn-by-turn navigation.");
       return;
@@ -379,7 +564,7 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
     } catch (error) {
       setMessage(`Failed to open navigation app: ${error?.message || "unknown error"}`);
     }
-  }, [routeStops]);
+  }, [driverLocation, routeStops]);
 
   return (
     <ScrollView
@@ -401,6 +586,10 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
           placeholderTextColor={PLACEHOLDER_COLOR}
           style={styles.input}
         />
+        <View style={styles.locationRow}>
+          <Text style={styles.locationText}>{locationStatusText}</Text>
+          <SecondaryButton title="Refresh GPS" onPress={() => void refreshDriverLocation()} />
+        </View>
         <View style={styles.optionRow}>
           {OBJECTIVES.map((item) => (
             <Pressable
@@ -490,8 +679,10 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
             setRouteMapMessage("");
             setAccepted(false);
             setCompletedIds({});
+            setPickupJobsByListingId({});
             setCollectedLbs(0);
             setEarnedValue(0);
+            setRecentReceipts([]);
             setMessage("Demo data reset");
           }} />
         </View>
@@ -508,7 +699,11 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
               initialRegion={mapRegion}
               provider={Platform.OS === "android" && ProviderGoogle ? ProviderGoogle : undefined}
             >
-              <MarkerComponent coordinate={DRIVER_START} title="Driver Start" description="Santa Clara base" />
+              <MarkerComponent
+                coordinate={driverLocation}
+                title="Driver Position"
+                description={locationStatusText}
+              />
               {routeStops.map((stop, idx) => {
                 const coordinate = stopCoordinate(stop);
                 if (!coordinate) return null;
@@ -552,6 +747,42 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
         </Card>
       ) : null}
 
+      {recentReceipts.length ? (
+        <Card>
+          <Text style={styles.stopsTitle}>Verified Diversion Receipts</Text>
+          {recentReceipts.map((receipt) => (
+            <View key={receipt.receipt_id} style={styles.receiptRow}>
+              {receipt.proof_photo_uri ? (
+                <Image source={{ uri: receipt.proof_photo_uri }} style={styles.receiptProofImage} />
+              ) : null}
+              <Text style={styles.stopTitle}>
+                {receipt.household_name} - {Number(receipt.actual_total_lbs || 0).toFixed(1)} lbs / $
+                {Number(receipt.actual_total_value || 0).toFixed(2)}
+              </Text>
+              <Text style={styles.stopMeta}>
+                Receipt {receipt.receipt_id} • variance {Number(receipt.variance_lbs || 0).toFixed(1)} lbs •
+                confidence {Math.round(Number(receipt.estimated_confidence || 0) * 100)}%
+              </Text>
+              <Text style={styles.receiptMeta}>
+                Capture {receipt.capture_mode || "manual"} • completed {String(receipt.completed_at || "").slice(0, 19).replace("T", " ")}
+              </Text>
+              <Text style={styles.receiptMeta}>
+                {Array.isArray(receipt.contamination_flags) && receipt.contamination_flags.length
+                  ? `Contamination flags: ${receipt.contamination_flags.join(", ")}`
+                  : "Contamination flags: none"}
+              </Text>
+              {receipt.completion_media?.signed_url ? (
+                <Text style={styles.receiptMeta}>Signed proof URL active until {String(receipt.completion_media.expires_at || "")}</Text>
+              ) : null}
+              <Text style={styles.receiptMeta}>
+                GPS {Number(receipt.proof_driver_lat || receipt.lat || 0).toFixed(5)}, {Number(receipt.proof_driver_lng || receipt.lng || 0).toFixed(5)}
+                {Number.isFinite(receipt.proof_geo_accuracy_meters) ? ` (±${Math.round(receipt.proof_geo_accuracy_meters)}m)` : ""}
+              </Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+
       {route?.stops?.length ? (
         <Card>
           <Text style={styles.stopsTitle}>Route Stops</Text>
@@ -566,8 +797,8 @@ export function DriverScreen({ priorityListingIds = [], onPriorityListingsConsum
                 </Text>
                 <Text style={styles.stopMeta}>ETA {stop.eta_minutes} min - {stop.address}</Text>
                 <SecondaryButton
-                  title={isDone ? "Completed" : "Mark Completed"}
-                  disabled={isDone}
+                  title={isDone ? "Completed" : proofCapturingStopId === listingId ? "Capturing Proof..." : "Complete with Proof"}
+                  disabled={isDone || proofCapturingStopId === listingId}
                   onPress={() => completeStop(stop)}
                 />
               </View>
@@ -626,6 +857,19 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontSize: 16,
     fontWeight: "500",
+  },
+  locationRow: {
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  locationText: {
+    flex: 1,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
   },
   optionRow: {
     flexDirection: "row",
@@ -714,6 +958,12 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     marginTop: 10,
   },
+  receiptRow: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 12,
+    marginTop: 12,
+  },
   stopTitle: {
     color: colors.ink,
     fontWeight: "800",
@@ -724,6 +974,19 @@ const styles = StyleSheet.create({
     color: colors.muted,
     marginBottom: 8,
     fontSize: 13,
+  },
+  receiptMeta: {
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 4,
+  },
+  receiptProofImage: {
+    width: "100%",
+    height: 180,
+    borderRadius: 16,
+    marginBottom: 10,
+    backgroundColor: colors.cardSoft,
   },
   message: {
     marginTop: 8,

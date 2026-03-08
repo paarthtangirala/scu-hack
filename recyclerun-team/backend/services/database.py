@@ -9,15 +9,19 @@ import os
 import sqlite3
 import threading
 import uuid
+import hashlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from backend.models.listing import Listing
-from backend.models.material import Material
+from backend.models.material import MATERIAL_RATES, Material
 
 
 VALID_STATUSES = {"available", "claimed", "completed"}
 PROFILE_ROLES = {"giver", "driver"}
+DEFAULT_ORG_ID = "org_santa_clara_demo"
+DEFAULT_ORG_NAME = "Santa Clara Diversion Pilot"
 STATUS_TRANSITIONS = {
     "available": {"claimed", "completed"},
     "claimed": {"completed"},
@@ -157,12 +161,100 @@ class ListingStore:
                 )
                 """
             )
+            self._ensure_listing_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS accept_route_results (
                     request_id TEXT PRIMARY KEY,
                     response_json TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS organizations (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    org_type TEXT NOT NULL DEFAULT 'city',
+                    region TEXT NOT NULL DEFAULT 'Santa Clara County',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pickup_jobs (
+                    id TEXT PRIMARY KEY,
+                    listing_id TEXT NOT NULL,
+                    org_id TEXT NOT NULL,
+                    driver_name TEXT NOT NULL,
+                    eta_minutes INTEGER NOT NULL DEFAULT 0,
+                    accepted_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    actual_materials_json TEXT NOT NULL DEFAULT '[]',
+                    actual_total_lbs REAL,
+                    contamination_flags_json TEXT NOT NULL DEFAULT '[]',
+                    completion_media_id TEXT NOT NULL DEFAULT '',
+                    driver_lat REAL,
+                    driver_lng REAL,
+                    receipt_id TEXT,
+                    request_id TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pickup_jobs_listing_id ON pickup_jobs(listing_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pickup_jobs_org_id ON pickup_jobs(org_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pickup_receipts (
+                    id TEXT PRIMARY KEY,
+                    pickup_job_id TEXT NOT NULL UNIQUE,
+                    listing_id TEXT NOT NULL,
+                    org_id TEXT NOT NULL,
+                    driver_name TEXT NOT NULL,
+                    household_name TEXT NOT NULL,
+                    address TEXT NOT NULL,
+                    listing_lat REAL NOT NULL,
+                    listing_lng REAL NOT NULL,
+                    capture_mode TEXT NOT NULL DEFAULT 'manual',
+                    source_session_id TEXT NOT NULL DEFAULT '',
+                    completion_media_id TEXT NOT NULL DEFAULT '',
+                    estimated_materials_json TEXT NOT NULL,
+                    actual_materials_json TEXT NOT NULL,
+                    estimated_total_lbs REAL NOT NULL,
+                    actual_total_lbs REAL NOT NULL,
+                    estimated_confidence REAL NOT NULL DEFAULT 0,
+                    variance_lbs REAL NOT NULL DEFAULT 0,
+                    variance_pct REAL NOT NULL DEFAULT 0,
+                    contamination_flags_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pickup_receipts_org_id ON pickup_receipts(org_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pickup_receipts_completed_at ON pickup_receipts(completed_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_assets (
+                    id TEXT PRIMARY KEY,
+                    purpose TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    content_blob BLOB NOT NULL,
+                    created_at TEXT NOT NULL
                 )
                 """
             )
@@ -202,6 +294,57 @@ class ListingStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_sessions_profile_id ON user_sessions(profile_id)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS live_vision_sessions (
+                    id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL DEFAULT '',
+                    provider TEXT NOT NULL DEFAULT 'gemini_live',
+                    transport TEXT NOT NULL DEFAULT 'direct_websocket',
+                    model TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'issued',
+                    token_expires_at TEXT NOT NULL DEFAULT '',
+                    new_session_expires_at TEXT NOT NULL DEFAULT '',
+                    device_label TEXT NOT NULL DEFAULT '',
+                    app_version TEXT NOT NULL DEFAULT '',
+                    platform TEXT NOT NULL DEFAULT '',
+                    device_tier TEXT NOT NULL DEFAULT '',
+                    network_type TEXT NOT NULL DEFAULT '',
+                    fallback_mode TEXT NOT NULL DEFAULT '',
+                    fallback_reason TEXT NOT NULL DEFAULT '',
+                    confirmed_count INTEGER NOT NULL DEFAULT 0,
+                    skipped_count INTEGER NOT NULL DEFAULT 0,
+                    error_summary TEXT NOT NULL DEFAULT '',
+                    listing_id TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS live_vision_events (
+                    session_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    ts_ms INTEGER NOT NULL,
+                    latency_ms INTEGER,
+                    candidate_id TEXT NOT NULL DEFAULT '',
+                    track_id TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    platform TEXT NOT NULL DEFAULT '',
+                    device_tier TEXT NOT NULL DEFAULT '',
+                    network_type TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, event_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_live_vision_events_session_id ON live_vision_events(session_id)"
+            )
+            self._ensure_default_organization(conn)
             current_total = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
             if current_total == 0:
                 self._seed_into_connection(conn)
@@ -278,6 +421,30 @@ class ListingStore:
         finally:
             conn.execute("PRAGMA foreign_keys=ON")
 
+    def _ensure_listing_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(listings)").fetchall()}
+        migrations = {
+            "capture_mode": "ALTER TABLE listings ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'manual'",
+            "source_session_id": "ALTER TABLE listings ADD COLUMN source_session_id TEXT NOT NULL DEFAULT ''",
+            "estimated_materials_json": "ALTER TABLE listings ADD COLUMN estimated_materials_json TEXT NOT NULL DEFAULT '[]'",
+            "estimated_total_lbs": "ALTER TABLE listings ADD COLUMN estimated_total_lbs REAL NOT NULL DEFAULT 0",
+            "estimated_confidence": "ALTER TABLE listings ADD COLUMN estimated_confidence REAL NOT NULL DEFAULT 0",
+            "org_id": f"ALTER TABLE listings ADD COLUMN org_id TEXT NOT NULL DEFAULT '{DEFAULT_ORG_ID}'",
+        }
+        for column_name, statement in migrations.items():
+            if column_name not in columns:
+                conn.execute(statement)
+
+    def _ensure_default_organization(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            INSERT INTO organizations (id, name, org_type, region)
+            VALUES (?, ?, 'city', 'Santa Clara County')
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name
+            """,
+            (DEFAULT_ORG_ID, DEFAULT_ORG_NAME),
+        )
+
     def _seed_into_connection(self, conn: sqlite3.Connection) -> None:
         for item in SEED_DATA:
             if len(item) == 8:
@@ -298,16 +465,122 @@ class ListingStore:
             self._insert_listing(conn, listing)
 
     @staticmethod
-    def _materials_payload(materials: Iterable[Material]) -> str:
-        return json.dumps([{"type": m.type, "lbs": m.lbs} for m in materials], separators=(",", ":"))
+    def _materials_payload(materials: Iterable[Any]) -> str:
+        payload_rows: List[Dict[str, Any]] = []
+        for item in materials:
+            if isinstance(item, Material):
+                payload_rows.append({"type": item.type, "lbs": item.lbs})
+                continue
+            if not isinstance(item, dict):
+                continue
+            m_type = str(item.get("type", "")).strip()
+            try:
+                lbs = round(float(item.get("lbs", item.get("weight_lbs", 0))), 1)
+            except (TypeError, ValueError):
+                continue
+            if not m_type or lbs <= 0:
+                continue
+            row = {"type": m_type, "lbs": lbs}
+            for key in ("count", "confidence", "weight_confidence", "weight_low", "weight_high", "provenance", "candidate_id"):
+                if item.get(key) is not None:
+                    row[key] = item.get(key)
+            payload_rows.append(row)
+        return json.dumps(payload_rows, separators=(",", ":"))
+
+    @staticmethod
+    def _material_rows_from_json(payload: str) -> List[Material]:
+        materials_raw = json.loads(payload or "[]")
+        materials: List[Material] = []
+        for item in materials_raw:
+            if not isinstance(item, dict):
+                continue
+            m_type = str(item.get("type", "")).strip()
+            try:
+                lbs = float(item.get("lbs", item.get("weight_lbs", 0)))
+            except (TypeError, ValueError):
+                continue
+            if not m_type or lbs <= 0:
+                continue
+            materials.append(Material(type=m_type, lbs=round(lbs, 1)))
+        return materials
+
+    @staticmethod
+    def _material_rows_to_response(materials: Iterable[Material]) -> List[Dict[str, Any]]:
+        return [material.to_dict() for material in materials]
+
+    @staticmethod
+    def _estimated_rows_from_json(payload: str) -> List[Dict[str, Any]]:
+        rows_raw = json.loads(payload or "[]")
+        estimated_rows: List[Dict[str, Any]] = []
+        for item in rows_raw:
+            if not isinstance(item, dict):
+                continue
+            m_type = str(item.get("type", "")).strip()
+            try:
+                lbs = float(item.get("lbs", item.get("weight_lbs", 0)))
+            except (TypeError, ValueError):
+                continue
+            if not m_type or lbs <= 0:
+                continue
+            material = Material(type=m_type, lbs=round(lbs, 1))
+            row = material.to_dict()
+            row["count"] = max(1, int(item.get("count", 1) or 1))
+            row["confidence"] = round(float(item.get("confidence", 0.0) or 0.0), 2)
+            row["weight_confidence"] = round(float(item.get("weight_confidence", row["confidence"]) or row["confidence"]), 2)
+            row["weight_low"] = round(float(item.get("weight_low", material.lbs) or material.lbs), 1)
+            row["weight_high"] = round(float(item.get("weight_high", material.lbs) or material.lbs), 1)
+            row["provenance"] = str(item.get("provenance", "") or "").strip()
+            row["candidate_id"] = str(item.get("candidate_id", "") or "").strip()
+            estimated_rows.append(row)
+        return estimated_rows
+
+    @staticmethod
+    def _estimated_rows_to_response(materials: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [dict(material) for material in materials]
+
+    @staticmethod
+    def _sum_material_lbs(materials: Iterable[Any]) -> float:
+        total = 0.0
+        for material in materials:
+            if isinstance(material, Material):
+                total += material.lbs
+                continue
+            if isinstance(material, dict):
+                try:
+                    total += float(material.get("lbs", material.get("weight_lbs", 0)) or 0)
+                except (TypeError, ValueError):
+                    continue
+        return round(total, 1)
+
+    @staticmethod
+    def _sum_material_value(materials: Iterable[Material]) -> float:
+        return round(sum(material.value for material in materials), 2)
+
+    @staticmethod
+    def _parse_iso8601(value: str) -> datetime:
+        raw = str(value or "").strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     def _insert_listing(self, conn: sqlite3.Connection, listing: Listing) -> None:
+        estimated_materials = listing.estimated_materials or list(listing.materials)
+        estimated_total_lbs = listing.estimated_total_lbs or self._sum_material_lbs(estimated_materials)
         conn.execute(
             """
             INSERT INTO listings (
                 id, address, lat, lng, household_name, phone, listing_kind, notes,
-                materials_json, status, posted_at, photo_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                materials_json, status, posted_at, photo_url, capture_mode,
+                source_session_id, estimated_materials_json, estimated_total_lbs,
+                estimated_confidence, org_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 listing.id,
@@ -322,24 +595,19 @@ class ListingStore:
                 listing.status,
                 listing.posted_at,
                 listing.photo_url,
+                listing.capture_mode,
+                listing.source_session_id,
+                self._materials_payload(estimated_materials),
+                estimated_total_lbs,
+                round(float(listing.estimated_confidence or 0.0), 2),
+                listing.org_id or DEFAULT_ORG_ID,
             ),
         )
 
     @staticmethod
     def _row_to_listing(row: sqlite3.Row) -> Listing:
-        materials_raw = json.loads(row["materials_json"] or "[]")
-        materials = []
-        for item in materials_raw:
-            if not isinstance(item, dict):
-                continue
-            m_type = str(item.get("type", "")).strip()
-            try:
-                lbs = float(item.get("lbs", 0))
-            except (TypeError, ValueError):
-                continue
-            if not m_type:
-                continue
-            materials.append(Material(type=m_type, lbs=lbs))
+        materials = ListingStore._material_rows_from_json(row["materials_json"] or "[]")
+        estimated_materials = ListingStore._estimated_rows_from_json(row["estimated_materials_json"] or "[]")
 
         listing = Listing(
             address=row["address"],
@@ -349,7 +617,13 @@ class ListingStore:
             phone=row["phone"],
             listing_kind=row["listing_kind"] or "household",
             materials=materials,
+            estimated_materials=estimated_materials or list(materials),
             notes=row["notes"] or "",
+            capture_mode=row["capture_mode"] or "manual",
+            source_session_id=row["source_session_id"] or "",
+            estimated_total_lbs=float(row["estimated_total_lbs"] or 0),
+            estimated_confidence=float(row["estimated_confidence"] or 0),
+            org_id=row["org_id"] or DEFAULT_ORG_ID,
         )
         listing.id = row["id"]
         listing.status = row["status"]
@@ -516,9 +790,602 @@ class ListingStore:
                 return "already_claimed"
             return "already_completed"
 
+    def _row_to_pickup_job(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "pickup_job_id": row["id"],
+            "listing_id": row["listing_id"],
+            "org_id": row["org_id"],
+            "driver_name": row["driver_name"],
+            "eta_minutes": int(row["eta_minutes"] or 0),
+            "accepted_at": row["accepted_at"],
+            "completed_at": row["completed_at"],
+            "status": row["status"],
+            "completion_media_id": row["completion_media_id"] or "",
+            "contamination_flags": json.loads(row["contamination_flags_json"] or "[]"),
+            "actual_total_lbs": float(row["actual_total_lbs"] or 0),
+            "receipt_id": row["receipt_id"] or "",
+            "request_id": row["request_id"] or "",
+        }
+
+    def _row_to_media_asset(self, row: sqlite3.Row, *, include_bytes: bool = False) -> Dict[str, Any]:
+        payload = {
+            "media_id": row["id"],
+            "purpose": row["purpose"],
+            "file_name": row["file_name"],
+            "mime_type": row["mime_type"],
+            "size_bytes": int(row["size_bytes"] or 0),
+            "sha256": row["sha256"],
+            "created_at": row["created_at"],
+        }
+        if include_bytes:
+            payload["content_bytes"] = bytes(row["content_blob"] or b"")
+        return payload
+
+    def _row_to_receipt(self, row: sqlite3.Row) -> Dict[str, Any]:
+        estimated_materials = self._estimated_rows_from_json(row["estimated_materials_json"] or "[]")
+        actual_materials = self._material_rows_from_json(row["actual_materials_json"] or "[]")
+        return {
+            "receipt_id": row["id"],
+            "pickup_job_id": row["pickup_job_id"],
+            "listing_id": row["listing_id"],
+            "org_id": row["org_id"],
+            "driver_name": row["driver_name"],
+            "household_name": row["household_name"],
+            "address": row["address"],
+            "lat": float(row["listing_lat"]),
+            "lng": float(row["listing_lng"]),
+            "capture_mode": row["capture_mode"],
+            "source_session_id": row["source_session_id"] or "",
+            "completion_media_id": row["completion_media_id"] or "",
+            "estimated_materials": self._estimated_rows_to_response(estimated_materials),
+            "actual_materials": self._material_rows_to_response(actual_materials),
+            "estimated_total_lbs": round(float(row["estimated_total_lbs"] or 0), 1),
+            "actual_total_lbs": round(float(row["actual_total_lbs"] or 0), 1),
+            "estimated_confidence": round(float(row["estimated_confidence"] or 0), 2),
+            "variance_lbs": round(float(row["variance_lbs"] or 0), 1),
+            "variance_pct": round(float(row["variance_pct"] or 0), 1),
+            "contamination_flags": json.loads(row["contamination_flags_json"] or "[]"),
+            "created_at": row["created_at"],
+            "completed_at": row["completed_at"],
+            "actual_total_value": self._sum_material_value(actual_materials),
+        }
+
+    def create_pickup_job(
+        self,
+        *,
+        listing_id: str,
+        driver_name: str,
+        eta_minutes: int,
+        request_id: str = "",
+    ) -> Dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            listing_row = conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+            if listing_row is None:
+                raise ValueError("Listing not found")
+            listing = self._row_to_listing(listing_row)
+            job_id = f"pickup_{uuid.uuid4().hex[:12]}"
+            accepted_at = self._now_iso()
+            conn.execute(
+                """
+                INSERT INTO pickup_jobs (
+                    id, listing_id, org_id, driver_name, eta_minutes,
+                    accepted_at, status, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)
+                """,
+                (
+                    job_id,
+                    listing.id,
+                    listing.org_id or DEFAULT_ORG_ID,
+                    driver_name,
+                    int(eta_minutes),
+                    accepted_at,
+                    request_id,
+                ),
+            )
+            row = conn.execute("SELECT * FROM pickup_jobs WHERE id = ?", (job_id,)).fetchone()
+            return self._row_to_pickup_job(row)
+
+    def get_pickup_job(self, pickup_id: str) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM pickup_jobs WHERE id = ?", (pickup_id,)).fetchone()
+            if row is None:
+                return None
+            return self._row_to_pickup_job(row)
+
+    def complete_pickup_job(
+        self,
+        pickup_id: str,
+        *,
+        actual_materials: List[Material],
+        actual_total_lbs: float,
+        contamination_flags: List[str],
+        completion_media_id: str,
+        completed_at: str,
+        driver_lat: float | None,
+        driver_lng: float | None,
+    ) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            job_row = conn.execute("SELECT * FROM pickup_jobs WHERE id = ?", (pickup_id,)).fetchone()
+            if job_row is None:
+                return None
+            if job_row["status"] == "completed" and str(job_row["receipt_id"] or "").strip():
+                receipt_row = conn.execute(
+                    "SELECT * FROM pickup_receipts WHERE id = ?",
+                    (job_row["receipt_id"],),
+                ).fetchone()
+                if receipt_row is not None:
+                    return self._row_to_receipt(receipt_row)
+
+            listing_row = conn.execute("SELECT * FROM listings WHERE id = ?", (job_row["listing_id"],)).fetchone()
+            if listing_row is None:
+                return None
+            listing = self._row_to_listing(listing_row)
+            completed_ts = completed_at or self._now_iso()
+            estimated_materials = listing.estimated_materials or list(listing.materials)
+            estimated_total_lbs = listing.estimated_total_lbs or self._sum_material_lbs(estimated_materials)
+            actual_total = round(float(actual_total_lbs), 1)
+            variance_lbs = round(actual_total - estimated_total_lbs, 1)
+            variance_pct = round((variance_lbs / estimated_total_lbs) * 100, 1) if estimated_total_lbs > 0 else 0.0
+            receipt_id = job_row["receipt_id"] or f"receipt_{uuid.uuid4().hex[:12]}"
+            created_at = self._now_iso()
+
+            conn.execute(
+                """
+                INSERT INTO pickup_receipts (
+                    id, pickup_job_id, listing_id, org_id, driver_name, household_name,
+                    address, listing_lat, listing_lng, capture_mode, source_session_id,
+                    completion_media_id, estimated_materials_json, actual_materials_json,
+                    estimated_total_lbs, actual_total_lbs, estimated_confidence,
+                    variance_lbs, variance_pct, contamination_flags_json, created_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(pickup_job_id) DO UPDATE SET
+                    completion_media_id=excluded.completion_media_id,
+                    actual_materials_json=excluded.actual_materials_json,
+                    actual_total_lbs=excluded.actual_total_lbs,
+                    variance_lbs=excluded.variance_lbs,
+                    variance_pct=excluded.variance_pct,
+                    contamination_flags_json=excluded.contamination_flags_json,
+                    completed_at=excluded.completed_at
+                """,
+                (
+                    receipt_id,
+                    pickup_id,
+                    listing.id,
+                    listing.org_id or DEFAULT_ORG_ID,
+                    job_row["driver_name"],
+                    listing.household_name,
+                    listing.address,
+                    listing.lat,
+                    listing.lng,
+                    listing.capture_mode,
+                    listing.source_session_id,
+                    completion_media_id,
+                    self._materials_payload(estimated_materials),
+                    self._materials_payload(actual_materials),
+                    estimated_total_lbs,
+                    actual_total,
+                    round(float(listing.estimated_confidence or 0.0), 2),
+                    variance_lbs,
+                    variance_pct,
+                    json.dumps(contamination_flags, separators=(",", ":")),
+                    created_at,
+                    completed_ts,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE pickup_jobs
+                SET status = 'completed',
+                    completed_at = ?,
+                    actual_materials_json = ?,
+                    actual_total_lbs = ?,
+                    contamination_flags_json = ?,
+                    completion_media_id = ?,
+                    driver_lat = ?,
+                    driver_lng = ?,
+                    receipt_id = ?
+                WHERE id = ?
+                """,
+                (
+                    completed_ts,
+                    self._materials_payload(actual_materials),
+                    actual_total,
+                    json.dumps(contamination_flags, separators=(",", ":")),
+                    completion_media_id,
+                    driver_lat,
+                    driver_lng,
+                    receipt_id,
+                    pickup_id,
+                ),
+            )
+            conn.execute("UPDATE listings SET status = 'completed' WHERE id = ?", (listing.id,))
+            receipt_row = conn.execute("SELECT * FROM pickup_receipts WHERE id = ?", (receipt_id,)).fetchone()
+            return self._row_to_receipt(receipt_row)
+
+    def get_receipt(self, receipt_id: str) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM pickup_receipts WHERE id = ?", (receipt_id,)).fetchone()
+            if row is None:
+                return None
+            return self._row_to_receipt(row)
+
+    def create_media_asset(
+        self,
+        *,
+        purpose: str,
+        file_name: str,
+        mime_type: str,
+        content_bytes: bytes,
+    ) -> Dict[str, Any]:
+        media_id = f"media_{uuid.uuid4().hex[:16]}"
+        created_at = self._now_iso()
+        blob = bytes(content_bytes or b"")
+        sha256 = hashlib.sha256(blob).hexdigest()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO media_assets (
+                    id, purpose, file_name, mime_type, size_bytes, sha256, content_blob, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    media_id,
+                    purpose,
+                    file_name,
+                    mime_type,
+                    len(blob),
+                    sha256,
+                    sqlite3.Binary(blob),
+                    created_at,
+                ),
+            )
+            row = conn.execute("SELECT * FROM media_assets WHERE id = ?", (media_id,)).fetchone()
+            return self._row_to_media_asset(row)
+
+    def get_media_asset(self, media_id: str, *, include_bytes: bool = False) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            columns = "*" if include_bytes else "id, purpose, file_name, mime_type, size_bytes, sha256, created_at"
+            row = conn.execute(
+                f"SELECT {columns} FROM media_assets WHERE id = ?",
+                (media_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._row_to_media_asset(row, include_bytes=include_bytes)
+
+    @staticmethod
+    def _dashboard_since(window: str) -> datetime | None:
+        now = datetime.now(timezone.utc)
+        if window == "7d":
+            return now - timedelta(days=7)
+        if window == "30d":
+            return now - timedelta(days=30)
+        if window == "90d":
+            return now - timedelta(days=90)
+        return None
+
+    def org_dashboard(self, org_id: str, *, window: str = "30d") -> Dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            org_row = conn.execute("SELECT * FROM organizations WHERE id = ?", (org_id,)).fetchone()
+            if org_row is None:
+                raise ValueError("Organization not found")
+
+            receipt_rows = conn.execute(
+                "SELECT * FROM pickup_receipts WHERE org_id = ? ORDER BY completed_at DESC",
+                (org_id,),
+            ).fetchall()
+            receipts = [self._row_to_receipt(row) for row in receipt_rows]
+            since = self._dashboard_since(window)
+            if since is not None:
+                receipts = [
+                    receipt
+                    for receipt in receipts
+                    if self._parse_iso8601(receipt["completed_at"]) >= since
+                ]
+
+            total_receipts = len(receipts)
+            total_lbs = round(sum(receipt["actual_total_lbs"] for receipt in receipts), 1)
+            total_value = round(sum(receipt["actual_total_value"] for receipt in receipts), 2)
+            contaminated = [receipt for receipt in receipts if receipt["contamination_flags"]]
+            mean_variance = round(
+                sum(abs(receipt["variance_lbs"]) for receipt in receipts) / total_receipts,
+                1,
+            ) if total_receipts else 0.0
+            mean_confidence = round(
+                sum(receipt["estimated_confidence"] for receipt in receipts) / total_receipts,
+                2,
+            ) if total_receipts else 0.0
+
+            pickup_times: List[float] = []
+            for receipt in receipts:
+                listing_row = conn.execute(
+                    "SELECT posted_at FROM listings WHERE id = ?",
+                    (receipt["listing_id"],),
+                ).fetchone()
+                if listing_row is None:
+                    continue
+                try:
+                    posted_at = self._parse_iso8601(listing_row["posted_at"])
+                    completed_at = self._parse_iso8601(receipt["completed_at"])
+                except Exception:
+                    continue
+                pickup_times.append(round((completed_at - posted_at).total_seconds() / 60, 1))
+
+            hotspots = [
+                {
+                    "receipt_id": receipt["receipt_id"],
+                    "lat": receipt["lat"],
+                    "lng": receipt["lng"],
+                    "household_name": receipt["household_name"],
+                    "actual_total_lbs": receipt["actual_total_lbs"],
+                    "completed_at": receipt["completed_at"],
+                }
+                for receipt in receipts[:8]
+            ]
+
+            material_mix: Dict[str, Dict[str, Any]] = {}
+            for receipt in receipts:
+                for material in receipt["actual_materials"]:
+                    material_type = str(material.get("type", "")).strip()
+                    if not material_type:
+                        continue
+                    current = material_mix.setdefault(
+                        material_type,
+                        {
+                            "type": material_type,
+                            "label": material.get("label") or MATERIAL_RATES.get(material_type, {}).get("label") or material_type,
+                            "emoji": material.get("emoji") or MATERIAL_RATES.get(material_type, {}).get("emoji") or "♻️",
+                            "total_lbs": 0.0,
+                            "total_value": 0.0,
+                            "pickup_count": 0,
+                        },
+                    )
+                    current["total_lbs"] = round(current["total_lbs"] + float(material.get("lbs", 0) or 0), 1)
+                    current["total_value"] = round(current["total_value"] + float(material.get("value", 0) or 0), 2)
+                    current["pickup_count"] += 1
+
+            material_mix_rows = sorted(
+                material_mix.values(),
+                key=lambda row: (-float(row["total_lbs"]), row["type"]),
+            )
+
+            return {
+                "success": True,
+                "org": {
+                    "id": org_row["id"],
+                    "name": org_row["name"],
+                    "org_type": org_row["org_type"],
+                    "region": org_row["region"],
+                },
+                "window": window,
+                "summary": {
+                    "completed_pickups": total_receipts,
+                    "completion_rate": 1.0 if total_receipts else 0.0,
+                    "total_lbs_diverted": total_lbs,
+                    "total_value_paid": total_value,
+                    "contamination_rate": round(len(contaminated) / total_receipts, 2) if total_receipts else 0.0,
+                    "mean_pickup_time_minutes": round(sum(pickup_times) / len(pickup_times), 1) if pickup_times else 0.0,
+                    "mean_estimated_confidence": mean_confidence,
+                    "mean_variance_lbs": mean_variance,
+                },
+                "receipt_count": total_receipts,
+                "material_mix": material_mix_rows,
+                "hotspots": hotspots,
+                "latest_receipts": receipts[:5],
+                "all_receipts": receipts,
+                "export_links": {
+                    "json": f"/api/orgs/{org_id}/dashboard?window={window}",
+                    "csv": f"/api/orgs/{org_id}/dashboard?window={window}&format=csv",
+                },
+            }
+
+    def create_live_vision_session(
+        self,
+        session_id: str,
+        *,
+        profile_id: str = "",
+        provider: str = "gemini_live",
+        transport: str = "direct_websocket",
+        model: str = "",
+        token_expires_at: str = "",
+        new_session_expires_at: str = "",
+        device_label: str = "",
+        app_version: str = "",
+        platform: str = "",
+        device_tier: str = "",
+        network_type: str = "",
+    ) -> Dict[str, Any]:
+        now = self._now_iso()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO live_vision_sessions (
+                    id, profile_id, provider, transport, model, status,
+                    token_expires_at, new_session_expires_at, device_label, app_version,
+                    platform, device_tier, network_type, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id[:80],
+                    profile_id[:80],
+                    provider[:40],
+                    transport[:40],
+                    model[:120],
+                    token_expires_at[:40],
+                    new_session_expires_at[:40],
+                    device_label[:80],
+                    app_version[:40],
+                    platform[:40],
+                    device_tier[:40],
+                    network_type[:40],
+                    now,
+                    now,
+                ),
+            )
+        return self.get_live_vision_session(session_id)
+
+    def get_live_vision_session(self, session_id: str) -> Dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    id, profile_id, provider, transport, model, status,
+                    token_expires_at, new_session_expires_at, device_label, app_version,
+                    platform, device_tier, network_type, fallback_mode, fallback_reason,
+                    confirmed_count, skipped_count, error_summary, listing_id,
+                    created_at, updated_at
+                FROM live_vision_sessions
+                WHERE id = ?
+                """,
+                (session_id[:80],),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "session_id": row["id"],
+                "profile_id": row["profile_id"] or "",
+                "provider": row["provider"] or "gemini_live",
+                "transport": row["transport"] or "direct_websocket",
+                "model": row["model"] or "",
+                "status": row["status"] or "issued",
+                "token_expires_at": row["token_expires_at"] or "",
+                "new_session_expires_at": row["new_session_expires_at"] or "",
+                "device_label": row["device_label"] or "",
+                "app_version": row["app_version"] or "",
+                "platform": row["platform"] or "",
+                "device_tier": row["device_tier"] or "",
+                "network_type": row["network_type"] or "",
+                "fallback_mode": row["fallback_mode"] or "",
+                "fallback_reason": row["fallback_reason"] or "",
+                "confirmed_count": int(row["confirmed_count"] or 0),
+                "skipped_count": int(row["skipped_count"] or 0),
+                "error_summary": row["error_summary"] or "",
+                "listing_id": row["listing_id"] or "",
+                "created_at": row["created_at"] or "",
+                "updated_at": row["updated_at"] or "",
+            }
+
+    def record_live_vision_events(self, session_id: str, events: Iterable[Dict[str, Any]]) -> int:
+        rows = list(events or [])
+        if not rows:
+            return 0
+        now = self._now_iso()
+        inserted = 0
+        with self._lock, self._connect() as conn:
+            for event in rows:
+                event_id = str(event.get("event_id", "") or "").strip()
+                event_type = str(event.get("event_type", "") or "").strip()
+                if not event_id or not event_type:
+                    continue
+                details = event.get("details", {})
+                if not isinstance(details, dict):
+                    details = {"value": details}
+                for key in (
+                    "device_model",
+                    "os_version",
+                    "transport_mode",
+                    "preview_fps_p50",
+                    "preview_fps_p95",
+                    "detector_ms_p50",
+                    "detector_ms_p95",
+                    "stable_candidate_ms_p50",
+                    "stable_candidate_ms_p95",
+                    "gemini_rtt_ms_p50",
+                    "gemini_rtt_ms_p95",
+                    "resume_count",
+                    "fallback_reason",
+                ):
+                    if event.get(key) is not None and key not in details:
+                        details[key] = event.get(key)
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO live_vision_events (
+                        session_id, event_id, event_type, ts_ms, latency_ms, candidate_id,
+                        track_id, reason, details_json, platform, device_tier, network_type, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id[:80],
+                        event_id[:80],
+                        event_type[:80],
+                        int(event.get("ts_ms") or 0),
+                        int(event["latency_ms"]) if event.get("latency_ms") is not None else None,
+                        str(event.get("candidate_id", "") or "")[:80],
+                        str(event.get("track_id", "") or "")[:80],
+                        str(event.get("reason", "") or "")[:160],
+                        json.dumps(details, separators=(",", ":"), sort_keys=True),
+                        str(event.get("platform", "") or "")[:40],
+                        str(event.get("device_tier", "") or "")[:40],
+                        str(event.get("network_type", "") or "")[:40],
+                        now,
+                    ),
+                )
+                inserted += 1
+            conn.execute(
+                "UPDATE live_vision_sessions SET status = ?, updated_at = ? WHERE id = ?",
+                ("streaming", now, session_id[:80]),
+            )
+        return inserted
+
+    def finish_live_vision_session(
+        self,
+        session_id: str,
+        *,
+        confirmed_count: int = 0,
+        skipped_count: int = 0,
+        fallback_mode: str = "",
+        error_summary: str = "",
+        listing_id: str = "",
+    ) -> Dict[str, Any] | None:
+        now = self._now_iso()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE live_vision_sessions
+                SET
+                    status = 'closed',
+                    confirmed_count = ?,
+                    skipped_count = ?,
+                    fallback_mode = ?,
+                    error_summary = ?,
+                    listing_id = CASE WHEN ? <> '' THEN ? ELSE listing_id END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    max(0, int(confirmed_count)),
+                    max(0, int(skipped_count)),
+                    fallback_mode[:80],
+                    error_summary[:400],
+                    listing_id[:80],
+                    listing_id[:80],
+                    now,
+                    session_id[:80],
+                ),
+            )
+        return self.get_live_vision_session(session_id)
+
+    def link_live_vision_session(self, session_id: str, listing_id: str) -> None:
+        if not session_id or not listing_id:
+            return
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE live_vision_sessions
+                SET listing_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (listing_id[:80], self._now_iso(), session_id[:80]),
+            )
+
     def reset_demo(self):
         """Restore deterministic demo seed inventory and statuses."""
         with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM live_vision_events")
+            conn.execute("DELETE FROM live_vision_sessions")
+            conn.execute("DELETE FROM media_assets")
+            conn.execute("DELETE FROM pickup_receipts")
+            conn.execute("DELETE FROM pickup_jobs")
             conn.execute("DELETE FROM accept_route_results")
             conn.execute("DELETE FROM listings")
             self._seed_into_connection(conn)

@@ -64,8 +64,15 @@ def create_listing():
         listing_kind=payload["listing_kind"],
         notes=payload["notes"],
         materials=payload["materials"],
+        estimated_materials=payload["estimated_materials"],
+        capture_mode=payload["capture_mode"],
+        source_session_id=payload["source_session_id"],
+        estimated_total_lbs=payload["estimated_total_lbs"],
+        estimated_confidence=payload["estimated_confidence"],
     )
     store.add(listing)
+    if payload["source_session_id"]:
+        store.link_live_vision_session(payload["source_session_id"], listing.id)
     listing_payload = listing.to_dict()
     listing_payload["geocode"] = geocode_meta
     return jsonify({"success": True, "listing": listing_payload}), 201
